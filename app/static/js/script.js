@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         if (file) {
             if (!file.name.toLowerCase().endsWith('.pdf')) {
-                showError('Only PDF files are supported');
+                showError('PDF 파일만 지원됩니다');
                 fileInput.value = '';
                 return;
             }
@@ -33,7 +33,7 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
         
         if (!currentFile) {
-            showError('Please select a PDF file first');
+            showError('먼저 PDF 파일을 선택해주세요');
             return;
         }
         
@@ -53,7 +53,7 @@ document.addEventListener('DOMContentLoaded', function() {
         .then(response => {
             if (!response.ok) {
                 return response.json().then(data => {
-                    throw new Error(data.detail || 'Failed to convert PDF');
+                    throw new Error(data.detail || 'PDF 변환에 실패했습니다');
                 });
             }
             return response.json();
@@ -64,7 +64,7 @@ document.addEventListener('DOMContentLoaded', function() {
             downloadBtn.disabled = false;
         })
         .catch(error => {
-            showError(error.message || 'An unknown error occurred');
+            showError(error.message || '알 수 없는 오류가 발생했습니다');
         })
         .finally(() => {
             loading.classList.add('hidden');

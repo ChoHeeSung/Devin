@@ -9,7 +9,7 @@ from typing import Dict, Any
 from langchain_docling import DoclingLoader
 from langchain_docling.loader import ExportType
 
-app = FastAPI(title="PDF to Markdown Converter")
+app = FastAPI(title="PDF to Markdown 변환기")
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -18,23 +18,23 @@ templates = Jinja2Templates(directory="app/templates")
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """
-    Render the main page
+    메인 페이지 렌더링
     """
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/convert-pdf")
 async def convert_pdf_to_markdown(file: UploadFile = File(...)):
     """
-    Convert a PDF file to Markdown format.
+    PDF 파일을 마크다운 형식으로 변환합니다.
     
     Args:
-        file: The PDF file to convert
+        file: 변환할 PDF 파일
         
     Returns:
-        Dict containing the markdown content
+        마크다운 내용을 포함하는 Dict
     """
     if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        raise HTTPException(status_code=400, detail="PDF 파일만 지원됩니다")
     
     temp_dir = tempfile.mkdtemp()
     temp_file_path = os.path.join(temp_dir, file.filename)
@@ -60,7 +60,7 @@ async def convert_pdf_to_markdown(file: UploadFile = File(...)):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"PDF 처리 중 오류 발생: {str(e)}")
     
     finally:
         shutil.rmtree(temp_dir)
