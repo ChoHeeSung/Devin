@@ -11,3 +11,30 @@
         transform: rotate(360deg);
     }
 }
+
+/* 로그 영역 스타일 */
+#conversion-log {
+    transition: all 0.3s ease-in-out;
+    border: 1px solid #e2e8f0;
+}
+
+#conversion-log.hidden {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+#log-content p {
+    line-height: 1.4;
+    margin-bottom: 0.25rem;
+    word-break: break-word;
+}
+
+/* 반응형 조정 */
+@media (max-width: 768px) {
+    #conversion-log {
+        max-height: 24rem;
+    }
+}
