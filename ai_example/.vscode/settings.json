@@ -1,0 +1,5 @@
+{
+    "python.defaultInterpreterPath": "/Users/heesung/anaconda3/envs/ai_example/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "jupyter.notebookFileRoot": "${workspaceFolder}"
+}
