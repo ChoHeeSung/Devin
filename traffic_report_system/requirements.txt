@@ -1,0 +1,30 @@
+# 교통 보고서 시스템 의존성
+# 작성일: 2025-05-12
+
+# 데이터베이스
+cx_Oracle==8.3.0
+
+# 데이터 처리
+pandas==2.0.0
+numpy==1.24.0
+scipy==1.10.0
+
+# 시각화
+plotly==5.14.0
+matplotlib==3.7.0
+kaleido==0.2.1  # plotly 정적 이미지 생성용
+
+# LLM 통합
+langchain==0.1.0
+langchain-core==0.1.0
+llama-cpp-python==0.2.0
+langgraph==0.0.15
+
+# 보고서 생성
+markdown==3.4.0
+weasyprint==59.0
+jinja2==3.1.0
+
+# 유틸리티
+python-dotenv==1.0.0
+tqdm==4.65.0
