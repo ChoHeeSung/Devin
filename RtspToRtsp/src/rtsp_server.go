@@ -86,6 +86,8 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		}
 		
 		request := string(buffer[:n])
+		log.Printf("Received RTSP request: %s", request)
+		
 		lines := strings.Split(request, "\r\n")
 		if len(lines) < 1 {
 			continue
@@ -99,13 +101,28 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		method := requestParts[0]
 		urlPath := requestParts[1]
 		
+		cseq := "1" // Default CSeq
+		for _, line := range lines {
+			if strings.HasPrefix(line, "CSeq:") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 {
+					cseq = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+		
+		if method == "OPTIONS" && urlPath == "*" {
+			s.sendOptionsResponse(conn, cseq)
+			continue
+		}
+		
 		if !strings.HasPrefix(urlPath, "/") {
 			continue
 		}
 		
 		streamUUID := urlPath[1:] // Remove leading slash
 		if streamUUID == "" {
-			s.sendOptionsResponse(conn)
+			s.sendOptionsResponse(conn, cseq)
 			continue
 		}
 		
@@ -114,50 +131,53 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		s.mutex.RUnlock()
 		
 		if !streamExists {
-			s.sendNotFoundResponse(conn)
+			s.sendNotFoundResponse(conn, cseq)
 			continue
 		}
 		
 		switch method {
 		case "OPTIONS":
-			s.sendOptionsResponse(conn)
+			s.sendOptionsResponse(conn, cseq)
 		case "DESCRIBE":
-			s.handleDescribe(conn, streamUUID)
+			s.handleDescribe(conn, streamUUID, cseq)
 		case "SETUP":
-			s.handleSetup(conn, streamUUID)
+			s.handleSetup(conn, streamUUID, cseq)
 		case "PLAY":
-			s.handlePlay(conn, streamUUID)
+			s.handlePlay(conn, streamUUID, cseq)
 		case "TEARDOWN":
-			s.handleTeardown(conn, streamUUID)
+			s.handleTeardown(conn, streamUUID, cseq)
 		default:
-			s.sendMethodNotAllowedResponse(conn)
+			s.sendMethodNotAllowedResponse(conn, cseq)
 		}
 	}
 }
 
-func (s *RTSPServer) sendOptionsResponse(conn net.Conn) {
+func (s *RTSPServer) sendOptionsResponse(conn net.Conn, cseq string) {
 	response := "RTSP/1.0 200 OK\r\n" +
-		"CSeq: 1\r\n" +
+		"CSeq: " + cseq + "\r\n" +
 		"Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n" +
 		"\r\n"
+	log.Printf("Sending OPTIONS response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) sendNotFoundResponse(conn net.Conn) {
+func (s *RTSPServer) sendNotFoundResponse(conn net.Conn, cseq string) {
 	response := "RTSP/1.0 404 Not Found\r\n" +
-		"CSeq: 1\r\n" +
+		"CSeq: " + cseq + "\r\n" +
 		"\r\n"
+	log.Printf("Sending 404 response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) sendMethodNotAllowedResponse(conn net.Conn) {
+func (s *RTSPServer) sendMethodNotAllowedResponse(conn net.Conn, cseq string) {
 	response := "RTSP/1.0 405 Method Not Allowed\r\n" +
-		"CSeq: 1\r\n" +
+		"CSeq: " + cseq + "\r\n" +
 		"\r\n"
+	log.Printf("Sending 405 response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) handleDescribe(conn net.Conn, streamUUID string) {
+func (s *RTSPServer) handleDescribe(conn net.Conn, streamUUID string, cseq string) {
 	Config.RunIFNotRun(streamUUID)
 	
 	codecs := Config.coGe(streamUUID)
@@ -166,36 +186,41 @@ func (s *RTSPServer) handleDescribe(conn net.Conn, streamUUID string) {
 		return
 	}
 	
-	response := "RTSP/1.0 200 OK\r\n" +
-		"CSeq: 1\r\n" +
-		"Content-Type: application/sdp\r\n" +
-		"Content-Length: 100\r\n" +
-		"\r\n" +
-		"v=0\r\n" +
+	sdp := "v=0\r\n" +
 		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
 		"s=RTSP Server\r\n" +
 		"t=0 0\r\n" +
 		"m=video 0 RTP/AVP 96\r\n" +
 		"a=rtpmap:96 H264/90000\r\n"
 	
+	response := "RTSP/1.0 200 OK\r\n" +
+		"CSeq: " + cseq + "\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: " + fmt.Sprintf("%d", len(sdp)) + "\r\n" +
+		"\r\n" +
+		sdp
+	
+	log.Printf("Sending DESCRIBE response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string) {
+func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string, cseq string) {
 	response := "RTSP/1.0 200 OK\r\n" +
-		"CSeq: 1\r\n" +
+		"CSeq: " + cseq + "\r\n" +
 		"Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n" +
 		"Session: 12345678\r\n" +
 		"\r\n"
+	log.Printf("Sending SETUP response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) handlePlay(conn net.Conn, streamUUID string) {
+func (s *RTSPServer) handlePlay(conn net.Conn, streamUUID string, cseq string) {
 	response := "RTSP/1.0 200 OK\r\n" +
-		"CSeq: 1\r\n" +
+		"CSeq: " + cseq + "\r\n" +
 		"Session: 12345678\r\n" +
 		"Range: npt=0.000-\r\n" +
 		"\r\n"
+	log.Printf("Sending PLAY response: %s", response)
 	conn.Write([]byte(response))
 	
 	clientID := pseudoUUID()
@@ -205,11 +230,12 @@ func (s *RTSPServer) handlePlay(conn net.Conn, streamUUID string) {
 	go s.streamToClient(conn, streamUUID, clientID, ch)
 }
 
-func (s *RTSPServer) handleTeardown(conn net.Conn, streamUUID string) {
+func (s *RTSPServer) handleTeardown(conn net.Conn, streamUUID string, cseq string) {
 	response := "RTSP/1.0 200 OK\r\n" +
-		"CSeq: 1\r\n" +
+		"CSeq: " + cseq + "\r\n" +
 		"Session: 12345678\r\n" +
 		"\r\n"
+	log.Printf("Sending TEARDOWN response: %s", response)
 	conn.Write([]byte(response))
 }
 
