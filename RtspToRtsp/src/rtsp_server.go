@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/deepch/vdk/av"
 	"github.com/deepch/vdk/format/rtspv2"
@@ -16,6 +18,8 @@ var rtspServer *RTSPServer
 type RTSPServer struct {
 	mutex       sync.RWMutex
 	streams     map[string]*RTSPStream
+	sessions    map[string]*RTSPSession
+	sessionsMtx sync.RWMutex
 	listener    net.Listener
 	port        string
 	serverState bool
@@ -37,9 +41,19 @@ type RTSPClient struct {
 	disconnect chan bool
 }
 
+type RTSPSession struct {
+	ID         string
+	StreamUUID string
+	LastActive time.Time
+	Transport  string
+	Conn       net.Conn
+	CSeq       string
+}
+
 func NewRTSPServer(port string) *RTSPServer {
 	return &RTSPServer{
 		streams:     make(map[string]*RTSPStream),
+		sessions:    make(map[string]*RTSPSession),
 		port:        port,
 		serverState: false,
 	}
@@ -55,6 +69,8 @@ func (s *RTSPServer) Start() error {
 
 	s.serverState = true
 	go s.acceptConnections()
+	
+	go s.cleanupSessions()
 	return nil
 }
 
@@ -77,11 +93,21 @@ func (s *RTSPServer) acceptConnections() {
 }
 
 func (s *RTSPServer) handleConnection(conn net.Conn) {
+	sessionID := pseudoUUID()
+	log.Printf("New RTSP connection established with session ID: %s", sessionID)
+	
 	buffer := make([]byte, 4096)
 	for {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		
 		n, err := conn.Read(buffer)
 		if err != nil {
-			log.Printf("RTSP server read error: %v", err)
+			if err != io.EOF {
+				log.Printf("RTSP server read error: %v", err)
+			}
+			s.sessionsMtx.Lock()
+			delete(s.sessions, sessionID)
+			s.sessionsMtx.Unlock()
 			return
 		}
 		
@@ -150,6 +176,21 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		
 		streamUUID = actualUUID
 		
+		s.sessionsMtx.Lock()
+		session, exists := s.sessions[sessionID]
+		if !exists {
+			session = &RTSPSession{
+				ID:         sessionID,
+				StreamUUID: streamUUID,
+				LastActive: time.Now(),
+				Conn:       conn,
+			}
+			s.sessions[sessionID] = session
+		}
+		session.LastActive = time.Now()
+		session.CSeq = cseq
+		s.sessionsMtx.Unlock()
+		
 		switch method {
 		case "OPTIONS":
 			s.sendOptionsResponse(conn, cseq)
@@ -157,11 +198,20 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 			s.handleDescribe(conn, streamUUID, cseq)
 		case "SETUP":
 			transport := headers["Transport"]
-			s.handleSetup(conn, streamUUID, cseq, transport)
+			
+			s.sessionsMtx.Lock()
+			session.Transport = transport
+			s.sessionsMtx.Unlock()
+			
+			s.handleSetup(conn, streamUUID, cseq, transport, sessionID)
 		case "PLAY":
-			s.handlePlay(conn, streamUUID, cseq)
+			s.handlePlay(conn, streamUUID, cseq, sessionID)
 		case "TEARDOWN":
-			s.handleTeardown(conn, streamUUID, cseq)
+			s.handleTeardown(conn, streamUUID, cseq, sessionID)
+			
+			s.sessionsMtx.Lock()
+			delete(s.sessions, sessionID)
+			s.sessionsMtx.Unlock()
 		default:
 			s.sendMethodNotAllowedResponse(conn, cseq)
 		}
@@ -236,7 +286,7 @@ func (s *RTSPServer) handleDescribe(conn net.Conn, streamUUID string, cseq strin
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string, cseq string, transport string) {
+func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string, cseq string, transport string, sessionID string) {
 	Config.RunIFNotRun(streamUUID)
 	
 	transportResponse := "RTP/AVP/TCP;unicast;interleaved=0-1"
@@ -262,44 +312,58 @@ func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string, cseq string, 
 	response := "RTSP/1.0 200 OK\r\n" +
 		"CSeq: " + cseq + "\r\n" +
 		"Transport: " + transportResponse + "\r\n" +
-		"Session: 12345678\r\n" +
+		"Session: " + sessionID + "\r\n" +
 		"\r\n"
 	log.Printf("Sending SETUP response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) handlePlay(conn net.Conn, streamUUID string, cseq string) {
+func (s *RTSPServer) handlePlay(conn net.Conn, streamUUID string, cseq string, sessionID string) {
 	response := "RTSP/1.0 200 OK\r\n" +
 		"CSeq: " + cseq + "\r\n" +
-		"Session: 12345678\r\n" +
+		"Session: " + sessionID + "\r\n" +
 		"Range: npt=0.000-\r\n" +
 		"\r\n"
 	log.Printf("Sending PLAY response: %s", response)
 	conn.Write([]byte(response))
 	
-	clientID := pseudoUUID()
-	
 	_, ch := Config.clAd(streamUUID)
 	
-	go s.streamToClient(conn, streamUUID, clientID, ch)
+	go s.streamToClient(conn, streamUUID, sessionID, ch)
 }
 
-func (s *RTSPServer) handleTeardown(conn net.Conn, streamUUID string, cseq string) {
+func (s *RTSPServer) handleTeardown(conn net.Conn, streamUUID string, cseq string, sessionID string) {
 	response := "RTSP/1.0 200 OK\r\n" +
 		"CSeq: " + cseq + "\r\n" +
-		"Session: 12345678\r\n" +
+		"Session: " + sessionID + "\r\n" +
 		"\r\n"
 	log.Printf("Sending TEARDOWN response: %s", response)
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) streamToClient(conn net.Conn, streamUUID string, clientID string, ch chan av.Packet) {
-	defer Config.clDe(streamUUID, clientID)
+func (s *RTSPServer) streamToClient(conn net.Conn, streamUUID string, sessionID string, ch chan av.Packet) {
+	defer Config.clDe(streamUUID, sessionID)
+	
+	keepAlive := true
+	go func() {
+		for keepAlive {
+			time.Sleep(5 * time.Second)
+			s.sessionsMtx.RLock()
+			_, exists := s.sessions[sessionID]
+			s.sessionsMtx.RUnlock()
+			if !exists {
+				keepAlive = false
+				return
+			}
+		}
+	}()
 	
 	for pkt := range ch {
+		if !keepAlive {
+			return
+		}
+		
 		header := []byte{0x24, 0x00, 0x00, 0x00}
-		
-		
 		packetLength := len(pkt.Data)
 		header[2] = byte(packetLength >> 8)
 		header[3] = byte(packetLength & 0xFF)
@@ -348,4 +412,23 @@ func (s *RTSPServer) UnregisterStream(uuid string) {
 	
 	delete(s.streams, uuid)
 	log.Printf("Unregistered RTSP stream: %s", uuid)
+}
+
+func (s *RTSPServer) cleanupSessions() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
+	for s.serverState {
+		<-ticker.C
+		
+		s.sessionsMtx.Lock()
+		now := time.Now()
+		for id, session := range s.sessions {
+			if now.Sub(session.LastActive) > 2*time.Minute {
+				log.Printf("Cleaning up inactive session: %s", id)
+				delete(s.sessions, id)
+			}
+		}
+		s.sessionsMtx.Unlock()
+	}
 }
