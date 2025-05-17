@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,13 +45,37 @@ func StartGStreamerServer(port string) error {
 	serverStarted = time.Now()
 	serverRunning = true
 	
+	// Check if GStreamer is installed
 	cmd := exec.Command("gst-launch-1.0", "--version")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("GStreamer 확인 실패: %v", err)
 	}
-	
 	log.Printf("GStreamer 버전: %s", string(output))
+	
+	rtspServerCmd = exec.Command("gst-rtsp-server-1.0", "-p", port)
+	rtspServerCmd.Stdout = os.Stdout
+	rtspServerCmd.Stderr = os.Stderr
+	
+	if err := rtspServerCmd.Start(); err != nil {
+		rtspServerCmd = exec.Command("test-launch", "--port", port)
+		rtspServerCmd.Stdout = os.Stdout
+		rtspServerCmd.Stderr = os.Stderr
+		
+		if err := rtspServerCmd.Start(); err != nil {
+			return fmt.Errorf("RTSP 서버 시작 실패: %v", err)
+		}
+	}
+	
+	time.Sleep(1 * time.Second)
+	
+	// Check if the server is listening on the port
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", port), 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("RTSP 서버가 포트 %s에서 시작되지 않았습니다: %v", port, err)
+	}
+	conn.Close()
+	
 	log.Printf("RTSP 서버가 포트 %s에서 시작되었습니다", port)
 	return nil
 }
@@ -141,19 +166,46 @@ func startStream(uuid string) error {
 	}
 
 	pipeline := fmt.Sprintf(
-		"rtspsrc location=%s latency=0 buffer-mode=0 drop-on-latency=true protocols=tcp do-retransmission=false ! " +
-		"rtph264depay ! h264parse ! rtph264pay name=pay0 config-interval=1 pt=96 ! " +
-		"rtspsink protocols=tcp service=%s path=/%s",
-		stream.URL, serverPort, uuid)
+		"( rtspsrc location=%s latency=0 buffer-mode=0 drop-on-latency=true protocols=tcp do-retransmission=false ! " +
+		"rtph264depay ! h264parse ! rtph264pay name=pay0 config-interval=1 pt=96 )",
+		stream.URL)
 
-	log.Printf("Starting GStreamer for stream %s: %s", uuid, pipeline)
+	mountPoint := fmt.Sprintf("/%s", uuid)
 	
-	cmd := exec.Command("gst-launch-1.0", "-v", pipeline)
+	log.Printf("Starting GStreamer RTSP stream %s: %s", uuid, pipeline)
+	
+	cmd := exec.Command("test-launch", 
+		"--port", serverPort, 
+		"--mount-point", mountPoint,
+		pipeline)
+	
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("GStreamer 시작 실패: %v", err)
+		cmd = exec.Command("gst-rtsp-server-1.0", 
+			"-p", serverPort, 
+			"-m", mountPoint, 
+			"-f", pipeline)
+		
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		
+		if err := cmd.Start(); err != nil {
+			pipeline = fmt.Sprintf(
+				"rtspsrc location=%s latency=0 buffer-mode=0 drop-on-latency=true protocols=tcp do-retransmission=false ! " +
+				"rtph264depay ! h264parse ! rtph264pay name=pay0 config-interval=1 pt=96 ! " +
+				"rtspsink protocols=tcp service=%s path=%s",
+				stream.URL, serverPort, mountPoint)
+			
+			cmd = exec.Command("gst-launch-1.0", "-v", pipeline)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("GStreamer 시작 실패: %v", err)
+			}
+		}
 	}
 
 	stream.GstCmd = cmd
