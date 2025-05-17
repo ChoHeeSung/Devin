@@ -19,6 +19,7 @@ type GStreamerStream struct {
 	Viewers      int
 	LowLatency   bool
 	GstPipeline  *exec.Cmd
+	RtspServer   *exec.Cmd
 }
 
 var (
@@ -27,6 +28,7 @@ var (
 	serverPort     string
 	serverStarted  time.Time
 	serverRunning  bool
+	mainRtspServer *exec.Cmd
 )
 
 func StartGStreamerServer(port string) error {
@@ -38,6 +40,18 @@ func StartGStreamerServer(port string) error {
 	serverStarted = time.Now()
 	serverRunning = true
 
+	rtspServerCmd := fmt.Sprintf(
+		"test-launch \"( videotestsrc is-live=true ! video/x-raw,width=640,height=480,framerate=30/1 ! "+
+		"x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! rtph264pay name=pay0 pt=96 )\"")
+	
+	cmd := exec.Command("gst-rtsp-launch", "-p", port)
+	
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("RTSP 서버 시작 실패: %v", err)
+	}
+	
+	mainRtspServer = cmd
+	
 	log.Printf("GStreamer RTSP 서버가 포트 %s에서 시작되었습니다", port)
 	return nil
 }
@@ -57,6 +71,14 @@ func StopGStreamerServer() {
 			log.Printf("스트림 종료 중: %s", uuid)
 			stream.GstPipeline.Process.Kill()
 		}
+		if stream.RtspServer != nil && stream.RtspServer.Process != nil {
+			stream.RtspServer.Process.Kill()
+		}
+	}
+	
+	if mainRtspServer != nil && mainRtspServer.Process != nil {
+		mainRtspServer.Process.Kill()
+		mainRtspServer = nil
 	}
 
 	serverRunning = false
@@ -87,6 +109,7 @@ func RegisterStream(uuid string, url string, onDemand bool) error {
 		Viewers:     0,
 		LowLatency:  true,
 		GstPipeline: nil,
+		RtspServer:  nil,
 	}
 
 	log.Printf("RTSP 스트림 등록됨: %s", uuid)
@@ -122,27 +145,18 @@ func startStream(uuid string) error {
 
 	pipelineStr := fmt.Sprintf(
 		"gst-launch-1.0 -v rtspsrc location=\"%s\" latency=0 buffer-mode=0 "+
-			"drop-on-latency=true protocols=tcp do-retransmission=false ! "+
-			"rtph264depay ! h264parse ! rtph264pay config-interval=1 pt=96 ! "+
-			"udpsink host=127.0.0.1 port=%s sync=false async=false",
-		stream.URL, serverPort)
+		"drop-on-latency=true protocols=tcp do-retransmission=false ! "+
+		"rtph264depay ! h264parse ! "+
+		"rtspclientsink location=rtsp://0.0.0.0:%s/%s "+
+		"protocols=tcp latency=0",
+		stream.URL, serverPort, uuid)
 
-	rtspServerPipeline := fmt.Sprintf(
-		"gst-rtsp-server rtsp-port=%s service=%s "+
-			"mount-point=/%s pipeline=\"( "+
-			"udpsrc port=%s ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! "+
-			"rtph264depay ! h264parse ! rtph264pay name=pay0 config-interval=1 pt=96 )\"",
-		serverPort, serverPort, uuid, serverPort)
-
+	log.Printf("Starting GStreamer pipeline for stream %s: %s", uuid, pipelineStr)
+	
 	cmd := exec.Command("bash", "-c", pipelineStr)
+	
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("GStreamer 파이프라인 시작 실패: %v", err)
-	}
-
-	serverCmd := exec.Command("bash", "-c", rtspServerPipeline)
-	if err := serverCmd.Start(); err != nil {
-		cmd.Process.Kill() // Kill the first pipeline if the second fails
-		return fmt.Errorf("RTSP 서버 파이프라인 시작 실패: %v", err)
 	}
 
 	stream.GstPipeline = cmd
@@ -171,6 +185,13 @@ func StopStream(uuid string) error {
 			return fmt.Errorf("GStreamer 파이프라인 종료 실패: %v", err)
 		}
 		stream.GstPipeline = nil
+	}
+	
+	if stream.RtspServer != nil && stream.RtspServer.Process != nil {
+		if err := stream.RtspServer.Process.Kill(); err != nil {
+			return fmt.Errorf("RTSP 서버 종료 실패: %v", err)
+		}
+		stream.RtspServer = nil
 	}
 
 	stream.Status = false
