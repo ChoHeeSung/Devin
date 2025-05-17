@@ -1,0 +1,155 @@
+# RTSP to RTSP Streaming Server
+
+이 프로젝트는 RTSP 스트림을 입력으로 받아 RTSP 스트림으로 출력하는 서버를 구현합니다. 
+GStreamer를 사용하여 저지연 RTSP 스트리밍을 제공합니다.
+
+## 주요 기능
+
+- RTSP 입력 스트림을 RTSP 출력 스트림으로 변환
+- 데이터베이스에서 스트림 정보 로드 (데이터베이스 연결 실패 시 Config 파일 사용)
+- 온디맨드 스트리밍 설정 지원 (서버 부하 감소)
+- GStreamer를 활용한 저지연 스트리밍
+- Docker 환경에서 손쉬운 배포 및 테스트
+
+## 기술 스택
+
+- Go 1.24.2
+- GStreamer 1.0
+- Docker
+- RTSP 프로토콜
+
+## 프로젝트 구조
+
+```
+RtspToRtsp/
+├── config/           # 설정 파일
+│   └── config.json   # 메인 설정 파일
+├── logs/             # 로그 파일 디렉토리
+├── src/              # 소스 코드
+│   ├── main.go       # 메인 애플리케이션 진입점
+│   ├── http.go       # HTTP 서버 관련 코드
+│   ├── stream.go     # 스트리밍 관련 코드
+│   ├── config.go     # 설정 관련 코드
+│   ├── status.go     # 상태 관리 및 API 관련 코드
+│   └── gstreamer.go  # GStreamer RTSP 서버 구현
+├── Dockerfile        # Docker 빌드 파일
+├── docker-compose.yml # Docker 구성 파일
+└── start.sh          # 시작 스크립트
+```
+
+## 설치 및 실행
+
+### 요구 사항
+
+- Docker 및 docker-compose가 설치된 환경
+
+### Docker를 사용한 실행
+
+1. 이 리포지토리를 클론합니다:
+   ```bash
+   git clone <repository-url>
+   cd RtspToRtsp
+   ```
+
+2. Docker 컨테이너를 빌드하고 시작합니다:
+   ```bash
+   docker-compose build
+   docker-compose up -d
+   ```
+
+3. 로그를 확인합니다:
+   ```bash
+   docker-compose logs -f
+   ```
+
+## 설정
+
+### config.json
+
+설정 파일은 `config/config.json`에 위치하며 다음과 같은 구조를 가집니다:
+
+```json
+{
+  "server": {
+    "http_port": ":8083",
+    "rtsp_port": ":8554",
+    "ice_servers": [
+      "stun:stun.l.google.com:19302"
+    ]
+  },
+  "stream_defaults": {
+    "on_demand": true,
+    "disable_audio": true,
+    "debug": false
+  },
+  "api": {
+    "cctv_master_url": "http://example.com/api",
+    "retry_interval": 30,
+    "timeout": 10
+  },
+  "streams": {
+    "stream1": {
+      "url": "rtsp://example.com/stream1"
+    },
+    "stream2": {
+      "url": "rtsp://example.com/stream2"
+    }
+  }
+}
+```
+
+## API 엔드포인트
+
+### RTSP 스트림 정보 조회
+
+```
+GET /stream/rtsp/:uuid
+```
+
+응답 예시:
+```json
+{
+  "uuid": "stream1",
+  "rtsp_url": "rtsp://server-ip:8554/stream1",
+  "status": true
+}
+```
+
+### 스트림 상태 조회
+
+```
+GET /stream/api/status
+```
+
+응답 예시:
+```json
+{
+  "streams": [
+    {
+      "uuid": "stream1",
+      "url": "rtsp://example.com/stream1",
+      "status": true,
+      "onDemand": true,
+      "disableAudio": true,
+      "debug": false,
+      "viewerCount": 0,
+      "lastUpdated": "2025-05-17T00:00:00Z",
+      "isRunning": true,
+      "reconnectCount": 0
+    }
+  ],
+  "total": 1,
+  "activeCount": 1
+}
+```
+
+## 저지연 RTSP 스트리밍 설정
+
+GStreamer를 사용하여 다음과 같은 저지연 설정을 적용했습니다:
+
+- `latency=0`: 지연 시간을 최소화
+- `buffer-mode=0`: 버퍼링 없음
+- `drop-on-latency=true`: 버퍼가 가득 찼을 때 프레임 드롭
+- `protocols=tcp`: 더 안정적인 전송을 위해 TCP 프로토콜 사용
+- `do-retransmission=false`: 재전송 대기 없음
+- `config-interval=1`: 자주 설정 정보 전송

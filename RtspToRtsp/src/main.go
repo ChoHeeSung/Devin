@@ -239,8 +239,7 @@ func main() {
 	})
 	http.HandleFunc("/api/server/stats", HandleServerStats)
 
-	rtspServer = NewRTSPServer(strings.TrimPrefix(Config.Server.RTSPPort, ":"))
-	err = rtspServer.Start()
+	err = StartGStreamerServer(strings.TrimPrefix(Config.Server.RTSPPort, ":"))
 	if err != nil {
 		log.Fatalf("RTSP 서버 시작 실패: %v", err)
 	}
@@ -256,7 +255,7 @@ func main() {
 	go func() {
 		sig := <-sigs
 		log.Println(sig)
-		rtspServer.Stop() // Stop RTSP server on shutdown
+		StopGStreamerServer() // Stop GStreamer RTSP server on shutdown
 		done <- true
 	}()
 	log.Println("Server Start Awaiting Signal")

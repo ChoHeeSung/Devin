@@ -370,7 +370,40 @@ func serveHTTP() {
 	}
 	router.GET("/stream/codec/:uuid", HTTPAPIServerStreamCodec)
 	
-	router.GET("/stream/rtsp/:uuid", HTTPAPIServerStreamRTSP)
+	router.GET("/stream/rtsp/:uuid", func(c *gin.Context) {
+		uuid := c.Param("uuid")
+		
+		if !Config.ext(uuid) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Stream not found"})
+			return
+		}
+		
+		Config.RunIFNotRun(uuid)
+		
+		rtspPort := Config.Server.RTSPPort
+		if rtspPort[0] == ':' {
+			rtspPort = rtspPort[1:]
+		}
+		
+		hostname := c.Request.Host
+		if hostname == "" {
+			hostname = "localhost"
+		} else {
+			if portIndex := strings.Index(hostname, ":"); portIndex > 0 {
+				hostname = hostname[:portIndex]
+			}
+		}
+		
+		rtspURL := fmt.Sprintf("rtsp://%s:%s/%s", hostname, rtspPort, uuid)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"uuid":     uuid,
+			"rtsp_url": rtspURL,
+			"status":   true,
+		})
+		
+		log.Printf("RTSP stream requested: %s", uuid)
+	})
 
 	// 스트리밍 상태 모니터링 API 추가
 	router.GET("/stream/api/status", HTTPAPIServerStatus)
