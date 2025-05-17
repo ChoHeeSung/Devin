@@ -154,7 +154,8 @@ func startStream(uuid string) error {
 	
 	log.Printf("Starting GStreamer pipeline for %s: %s", uuid, pipeline)
 	
-	cmd := exec.Command("gst-launch-1.0", "-v", strings.Split(pipeline, " ")...)
+	args := append([]string{"-v"}, strings.Split(pipeline, " ")...)
+	cmd := exec.Command("gst-launch-1.0", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	
