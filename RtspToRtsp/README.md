@@ -1,20 +1,20 @@
 # RTSP to RTSP Streaming Server
 
 이 프로젝트는 RTSP 스트림을 입력으로 받아 RTSP 스트림으로 출력하는 서버를 구현합니다. 
-GStreamer를 사용하여 저지연 RTSP 스트리밍을 제공합니다.
+FFmpeg을 사용하여 저지연 RTSP 스트리밍을 제공합니다.
 
 ## 주요 기능
 
 - RTSP 입력 스트림을 RTSP 출력 스트림으로 변환
 - 데이터베이스에서 스트림 정보 로드 (데이터베이스 연결 실패 시 Config 파일 사용)
 - 온디맨드 스트리밍 설정 지원 (서버 부하 감소)
-- GStreamer를 활용한 저지연 스트리밍
+- FFmpeg을 활용한 저지연 스트리밍
 - Docker 환경에서 손쉬운 배포 및 테스트
 
 ## 기술 스택
 
 - Go 1.24.2
-- GStreamer 1.0
+- FFmpeg
 - Docker
 - RTSP 프로토콜
 
@@ -25,13 +25,14 @@ RtspToRtsp/
 ├── config/           # 설정 파일
 │   └── config.json   # 메인 설정 파일
 ├── logs/             # 로그 파일 디렉토리
+├── streams/          # 스트림 임시 파일 디렉토리
 ├── src/              # 소스 코드
 │   ├── main.go       # 메인 애플리케이션 진입점
 │   ├── http.go       # HTTP 서버 관련 코드
 │   ├── stream.go     # 스트리밍 관련 코드
 │   ├── config.go     # 설정 관련 코드
 │   ├── status.go     # 상태 관리 및 API 관련 코드
-│   └── gstreamer.go  # GStreamer RTSP 서버 구현
+│   └── gstreamer.go  # FFmpeg RTSP 서버 구현 (파일명은 유지)
 ├── Dockerfile        # Docker 빌드 파일
 ├── docker-compose.yml # Docker 구성 파일
 └── start.sh          # 시작 스크립트
@@ -98,6 +99,20 @@ RtspToRtsp/
 }
 ```
 
+## RTSP URL 구조
+
+RTSP 스트림은 다음과 같은 URL 형식으로 접근할 수 있습니다:
+
+```
+rtsp://서버IP:8554/스트림UUID
+```
+
+예를 들어:
+- 금곡IC 스트림: `rtsp://서버IP:8554/금곡IC`
+- TEST2 스트림: `rtsp://서버IP:8554/TEST2` 또는 `rtsp://서버IP:8554/test2` (대소문자 구분 없음)
+
+스트림 UUID는 config.json 파일의 "streams" 섹션에 정의된 키 값입니다. 스트림 접근 시 대소문자를 구분하지 않으므로 "TEST2"와 "test2"는 동일한 스트림으로 인식됩니다.
+
 ## API 엔드포인트
 
 ### RTSP 스트림 정보 조회
@@ -147,51 +162,55 @@ GET /stream/api/status
 
 ### RTSP 서버 구현
 
-이 프로젝트는 GStreamer를 사용하여 RTSP 서버를 구현하고 저지연 스트리밍을 최적화합니다:
+이 프로젝트는 FFmpeg을 사용하여 RTSP 서버를 구현하고 저지연 스트리밍을 최적화합니다:
 
-1. **GStreamer 파이프라인**: 각 스트림에 대해 저지연 최적화된 파이프라인을 생성합니다.
+1. **FFmpeg 파이프라인**: 각 스트림에 대해 저지연 최적화된 파이프라인을 생성합니다.
 2. **온디맨드 스트리밍**: 클라이언트 요청이 있을 때만 스트림을 시작하여 서버 리소스를 절약합니다.
 3. **대소문자 구분 없는 스트림 접근**: 스트림 UUID 검색 시 대소문자를 구분하지 않습니다.
-4. **이중 파이프라인 구조**: 소스 RTSP 스트림을 수신하는 파이프라인과 RTSP 서버로 제공하는 파이프라인을 분리하여 안정성을 높입니다.
+4. **직접 스트림 전달**: 소스 RTSP 스트림을 FFmpeg을 통해 직접 RTSP로 전달하여 안정성과 성능을 높입니다.
 
 ### 저지연 RTSP 스트리밍 설정
 
-GStreamer를 사용하여 다음과 같은 저지연 설정을 적용했습니다:
+FFmpeg을 사용하여 다음과 같은 저지연 설정을 적용했습니다:
 
-- `latency=0`: 지연 시간을 최소화
-- `buffer-mode=0`: 버퍼링 없음
-- `drop-on-latency=true`: 버퍼가 가득 찼을 때 프레임 드롭
-- `protocols=tcp`: 더 안정적인 전송을 위해 TCP 프로토콜 사용
-- `do-retransmission=false`: 재전송 대기 없음
-- `config-interval=1`: 자주 설정 정보 전송
+- `-rtsp_transport tcp`: 더 안정적인 전송을 위해 TCP 프로토콜 사용
+- `-c:v copy`: 비디오 트랜스코딩 없이 직접 복사하여 지연 최소화
+- `-c:a copy`: 오디오 트랜스코딩 없이 직접 복사하여 지연 최소화
+- `-muxdelay 0.1`: 멀티플렉싱 지연을 최소화하여 전체 지연 감소
 
 ### 구현 아키텍처
 
 ```
-[소스 RTSP 스트림] → [GStreamer 파이프라인] → [rtspsink] → [클라이언트]
+[소스 RTSP 스트림] → [FFmpeg] → [RTSP 출력] → [클라이언트]
 ```
 
-1. 소스 RTSP 스트림에서 데이터를 가져옵니다 (rtspsrc).
-2. GStreamer 파이프라인을 통해 저지연 최적화를 적용합니다.
-3. rtspsink 요소를 통해 RTSP 서버 기능을 제공합니다.
+1. 소스 RTSP 스트림에서 데이터를 가져옵니다.
+2. FFmpeg을 통해 저지연 최적화를 적용합니다.
+3. RTSP 출력을 통해 클라이언트에게 스트림을 전달합니다.
 4. 온디맨드 설정이 활성화된 경우, 클라이언트 요청이 있을 때만 스트림을 시작합니다.
 
-### GStreamer 파이프라인 구조
+### FFmpeg 명령어 구조
 
-각 스트림은 다음과 같은 GStreamer 파이프라인으로 처리됩니다:
+각 스트림은 다음과 같은 FFmpeg 명령어로 처리됩니다:
 
 ```
-gst-launch-1.0 -v \
-  rtspsrc location="rtsp://example.com/stream" latency=0 buffer-mode=0 \
-  drop-on-latency=true protocols=tcp do-retransmission=false ! \
-  rtph264depay ! h264parse ! \
-  rtspsink protocols=tcp service=8554 path=/stream \
-  latency=0 async-handling=true
+ffmpeg -nostdin -loglevel warning -rtsp_transport tcp -i rtsp://example.com/stream \
+  -c:v copy -c:a copy -f rtsp -rtsp_transport tcp -muxdelay 0.1 \
+  rtsp://0.0.0.0:8554/stream
 ```
 
-이 파이프라인은 다음과 같은 구성 요소로 이루어져 있습니다:
+이 명령어는 다음과 같은 구성 요소로 이루어져 있습니다:
 
-1. **rtspsrc**: 소스 RTSP 스트림에 연결하여 데이터를 가져옵니다.
-2. **rtph264depay**: RTP 패킷에서 H.264 비디오 데이터를 추출합니다.
-3. **h264parse**: H.264 비디오 스트림을 파싱합니다.
-4. **rtspsink**: RTSP 서버 기능을 제공하여 클라이언트에게 스트림을 전달합니다.
+1. **입력 옵션**: 소스 RTSP 스트림에 연결하기 위한 설정
+   - `-nostdin`: 표준 입력 비활성화
+   - `-loglevel warning`: 로그 레벨 설정
+   - `-rtsp_transport tcp`: RTSP 전송에 TCP 사용
+   - `-i rtsp://example.com/stream`: 입력 스트림 URL
+
+2. **출력 옵션**: RTSP 출력 스트림 설정
+   - `-c:v copy`: 비디오 코덱 복사 (트랜스코딩 없음)
+   - `-c:a copy`: 오디오 코덱 복사 (트랜스코딩 없음)
+   - `-f rtsp`: RTSP 출력 형식
+   - `-rtsp_transport tcp`: 출력 RTSP 전송에 TCP 사용
+   - `-muxdelay 0.1`: 멀티플렉싱 지연 최소화
+   - `rtsp://0.0.0.0:8554/stream`: 출력 RTSP URL
