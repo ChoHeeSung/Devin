@@ -101,14 +101,22 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		method := requestParts[0]
 		urlPath := requestParts[1]
 		
-		cseq := "1" // Default CSeq
-		for _, line := range lines {
-			if strings.HasPrefix(line, "CSeq:") {
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) == 2 {
-					cseq = strings.TrimSpace(parts[1])
-				}
+		headers := make(map[string]string)
+		for _, line := range lines[1:] {
+			if line == "" {
+				continue
 			}
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				value := strings.TrimSpace(parts[1])
+				headers[key] = value
+			}
+		}
+		
+		cseq := "1" // Default CSeq
+		if val, ok := headers["CSeq"]; ok {
+			cseq = val
 		}
 		
 		if method == "OPTIONS" && urlPath == "*" {
@@ -116,24 +124,31 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 			continue
 		}
 		
-		if !strings.HasPrefix(urlPath, "/") {
-			continue
-		}
-		
-		streamUUID := urlPath[1:] // Remove leading slash
+		streamUUID := s.extractStreamUUID(urlPath)
 		if streamUUID == "" {
 			s.sendOptionsResponse(conn, cseq)
 			continue
 		}
 		
 		s.mutex.RLock()
-		_, streamExists := s.streams[streamUUID]
+		streamFound := false
+		var actualUUID string
+		for uuid := range s.streams {
+			if strings.EqualFold(uuid, streamUUID) {
+				streamFound = true
+				actualUUID = uuid
+				break
+			}
+		}
 		s.mutex.RUnlock()
 		
-		if !streamExists {
+		if !streamFound {
+			log.Printf("Stream not found: %s", streamUUID)
 			s.sendNotFoundResponse(conn, cseq)
 			continue
 		}
+		
+		streamUUID = actualUUID
 		
 		switch method {
 		case "OPTIONS":
@@ -141,7 +156,8 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		case "DESCRIBE":
 			s.handleDescribe(conn, streamUUID, cseq)
 		case "SETUP":
-			s.handleSetup(conn, streamUUID, cseq)
+			transport := headers["Transport"]
+			s.handleSetup(conn, streamUUID, cseq, transport)
 		case "PLAY":
 			s.handlePlay(conn, streamUUID, cseq)
 		case "TEARDOWN":
@@ -150,6 +166,22 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 			s.sendMethodNotAllowedResponse(conn, cseq)
 		}
 	}
+}
+
+func (s *RTSPServer) extractStreamUUID(urlPath string) string {
+	if strings.HasPrefix(urlPath, "rtsp://") {
+		parts := strings.Split(urlPath, "/")
+		if len(parts) > 3 {
+			return parts[len(parts)-1]
+		}
+		return ""
+	}
+	
+	if strings.HasPrefix(urlPath, "/") {
+		return urlPath[1:]
+	}
+	
+	return urlPath
 }
 
 func (s *RTSPServer) sendOptionsResponse(conn net.Conn, cseq string) {
@@ -204,10 +236,32 @@ func (s *RTSPServer) handleDescribe(conn net.Conn, streamUUID string, cseq strin
 	conn.Write([]byte(response))
 }
 
-func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string, cseq string) {
+func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string, cseq string, transport string) {
+	Config.RunIFNotRun(streamUUID)
+	
+	transportResponse := "RTP/AVP/TCP;unicast;interleaved=0-1"
+	if transport != "" {
+		if strings.Contains(transport, "RTP/AVP;unicast") {
+			clientPorts := ""
+			if strings.Contains(transport, "client_port=") {
+				parts := strings.Split(transport, "client_port=")
+				if len(parts) > 1 {
+					portParts := strings.Split(parts[1], ";")
+					clientPorts = portParts[0]
+				}
+			}
+			
+			if clientPorts != "" {
+				transportResponse = "RTP/AVP;unicast;client_port=" + clientPorts + ";server_port=5000-5001"
+			} else {
+				transportResponse = "RTP/AVP;unicast;client_port=5000-5001;server_port=5000-5001"
+			}
+		}
+	}
+	
 	response := "RTSP/1.0 200 OK\r\n" +
 		"CSeq: " + cseq + "\r\n" +
-		"Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n" +
+		"Transport: " + transportResponse + "\r\n" +
 		"Session: 12345678\r\n" +
 		"\r\n"
 	log.Printf("Sending SETUP response: %s", response)
@@ -259,8 +313,11 @@ func (s *RTSPServer) RegisterStream(uuid string, url string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	
-	if _, exists := s.streams[uuid]; exists {
-		return
+	for existingUUID := range s.streams {
+		if strings.EqualFold(existingUUID, uuid) {
+			log.Printf("Stream already registered with different case: %s vs %s", existingUUID, uuid)
+			return
+		}
 	}
 	
 	stream := &RTSPStream{
