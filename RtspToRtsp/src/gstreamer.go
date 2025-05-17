@@ -8,11 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"net/http"
 	"io/ioutil"
 	"bufio"
 	"net"
-	"bytes"
 )
 
 // GStreamerStream represents a single RTSP stream
