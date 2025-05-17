@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTX 스트리밍 테스트</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .embed-container {
+            width: 100%;
+            height: 600px;
+            margin: 20px 0;
+            background-color: #000;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        embed {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        input[type="text"] {
+            width: 70%;
+            padding: 8px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MTX 스트리밍 테스트</h1>
+        
+        <div class="controls">
+            <input type="text" id="urlInput" placeholder="URL을 입력하세요" value="http://127.0.0.1:8083/stream/player/금곡IC">
+            <button id="loadButton">로드</button>
+        </div>
+
+        <div class="embed-container">
+            <embed id="contentEmbed" type="text/html" />
+        </div>
+    </div>
+
+    <script>
+        const urlInput = document.getElementById('urlInput');
+        const loadButton = document.getElementById('loadButton');
+        const contentEmbed = document.getElementById('contentEmbed');
+
+        // URL에서 초기 주소 가져오기
+        function getInitialUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('url') || 'http://127.0.0.1:8083/stream/player/금곡IC';
+        }
+
+        // embed에 URL 로드
+        function loadUrl() {
+            const url = urlInput.value.trim();
+            if (url) {
+                contentEmbed.src = url;
+            } else {
+                alert('유효한 URL을 입력해주세요.');
+            }
+        }
+
+        // 이벤트 리스너 등록
+        loadButton.addEventListener('click', loadUrl);
+        urlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loadUrl();
+            }
+        });
+
+        // 페이지 로드 시 자동으로 URL 로드
+        window.addEventListener('load', () => {
+            const initialUrl = getInitialUrl();
+            urlInput.value = initialUrl;
+            loadUrl();
+        });
+    </script>
+</body>
+</html> 
