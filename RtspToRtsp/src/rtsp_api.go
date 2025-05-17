@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -33,8 +34,8 @@ func HTTPAPIServerStreamRTSP(c *gin.Context) {
 	if hostname == "" {
 		hostname = "localhost"
 	} else {
-		if idx := fmt.Sprintf("%s", hostname); idx != "" {
-			hostname = hostname[:len(hostname)-len(idx)-1]
+		if portIndex := strings.Index(hostname, ":"); portIndex > 0 {
+			hostname = hostname[:portIndex]
 		}
 	}
 	

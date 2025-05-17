@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/deepch/vdk/av"
@@ -76,116 +77,155 @@ func (s *RTSPServer) acceptConnections() {
 }
 
 func (s *RTSPServer) handleConnection(conn net.Conn) {
-	rtspConn := rtspv2.NewConn(conn)
+	buffer := make([]byte, 4096)
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			log.Printf("RTSP server read error: %v", err)
+			return
+		}
+		
+		request := string(buffer[:n])
+		lines := strings.Split(request, "\r\n")
+		if len(lines) < 1 {
+			continue
+		}
+		
+		requestParts := strings.Split(lines[0], " ")
+		if len(requestParts) < 3 {
+			continue
+		}
+		
+		method := requestParts[0]
+		urlPath := requestParts[1]
+		
+		if !strings.HasPrefix(urlPath, "/") {
+			continue
+		}
+		
+		streamUUID := urlPath[1:] // Remove leading slash
+		if streamUUID == "" {
+			s.sendOptionsResponse(conn)
+			continue
+		}
+		
+		s.mutex.RLock()
+		_, streamExists := s.streams[streamUUID]
+		s.mutex.RUnlock()
+		
+		if !streamExists {
+			s.sendNotFoundResponse(conn)
+			continue
+		}
+		
+		switch method {
+		case "OPTIONS":
+			s.sendOptionsResponse(conn)
+		case "DESCRIBE":
+			s.handleDescribe(conn, streamUUID)
+		case "SETUP":
+			s.handleSetup(conn, streamUUID)
+		case "PLAY":
+			s.handlePlay(conn, streamUUID)
+		case "TEARDOWN":
+			s.handleTeardown(conn, streamUUID)
+		default:
+			s.sendMethodNotAllowedResponse(conn)
+		}
+	}
+}
+
+func (s *RTSPServer) sendOptionsResponse(conn net.Conn) {
+	response := "RTSP/1.0 200 OK\r\n" +
+		"CSeq: 1\r\n" +
+		"Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n" +
+		"\r\n"
+	conn.Write([]byte(response))
+}
+
+func (s *RTSPServer) sendNotFoundResponse(conn net.Conn) {
+	response := "RTSP/1.0 404 Not Found\r\n" +
+		"CSeq: 1\r\n" +
+		"\r\n"
+	conn.Write([]byte(response))
+}
+
+func (s *RTSPServer) sendMethodNotAllowedResponse(conn net.Conn) {
+	response := "RTSP/1.0 405 Method Not Allowed\r\n" +
+		"CSeq: 1\r\n" +
+		"\r\n"
+	conn.Write([]byte(response))
+}
+
+func (s *RTSPServer) handleDescribe(conn net.Conn, streamUUID string) {
+	Config.RunIFNotRun(streamUUID)
 	
-	server := &rtspv2.Server{
-		HandleDescribe: func(conn *rtspv2.Conn) {
-			urlPath := conn.URL.Path
-			streamUUID := urlPath[1:] // Remove leading slash
-			
-			s.mutex.RLock()
-			_, ok := s.streams[streamUUID]
-			s.mutex.RUnlock()
-			
-			if !ok {
-				log.Printf("Stream not found: %s", streamUUID)
-				return
-			}
-			
-			Config.RunIFNotRun(streamUUID)
-			
-			codecs := Config.coGe(streamUUID)
-			if codecs == nil {
-				log.Printf("No codec data available for stream: %s", streamUUID)
-				return
-			}
-			
-			err := conn.WriteHeader(codecs)
-			if err != nil {
-				log.Printf("Failed to write header: %v", err)
-				return
-			}
-		},
-		HandlePlay: func(conn *rtspv2.Conn) {
-			urlPath := conn.URL.Path
-			streamUUID := urlPath[1:] // Remove leading slash
-			
-			s.mutex.RLock()
-			_, ok := s.streams[streamUUID]
-			s.mutex.RUnlock()
-			
-			if !ok {
-				log.Printf("Stream not found: %s", streamUUID)
-				return
-			}
-			
-			clientID := pseudoUUID()
-			
-			client := &RTSPClient{
-				ID:         clientID,
-				Conn:       conn,
-				disconnect: make(chan bool),
-			}
-			
-			s.mutex.RLock()
-			stream, ok := s.streams[streamUUID]
-			if ok {
-				stream.clientsMtx.Lock()
-				stream.clients[clientID] = client
-				stream.clientsMtx.Unlock()
-			}
-			s.mutex.RUnlock()
-			
-			_, ch := Config.clAd(streamUUID)
-			
-			go func() {
-				defer func() {
-					s.mutex.RLock()
-					stream, ok := s.streams[streamUUID]
-					if ok {
-						stream.clientsMtx.Lock()
-						delete(stream.clients, clientID)
-						stream.clientsMtx.Unlock()
-					}
-					s.mutex.RUnlock()
-					Config.clDe(streamUUID, clientID)
-				}()
-				
-				for {
-					select {
-					case pkt := <-ch:
-						err := conn.WritePacket(&pkt)
-						if err != nil {
-							log.Printf("Failed to write packet: %v", err)
-							return
-						}
-					case <-client.disconnect:
-						return
-					}
-				}
-			}()
-		},
-		HandleOptions: func(conn *rtspv2.Conn) {
-		},
-		HandleSetup: func(conn *rtspv2.Conn) {
-		},
+	codecs := Config.coGe(streamUUID)
+	if codecs == nil {
+		log.Printf("No codec data available for stream: %s", streamUUID)
+		return
 	}
 	
+	response := "RTSP/1.0 200 OK\r\n" +
+		"CSeq: 1\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: 100\r\n" +
+		"\r\n" +
+		"v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=RTSP Server\r\n" +
+		"t=0 0\r\n" +
+		"m=video 0 RTP/AVP 96\r\n" +
+		"a=rtpmap:96 H264/90000\r\n"
 	
-	if server.HandleOptions != nil {
-		server.HandleOptions(rtspConn)
-	}
+	conn.Write([]byte(response))
+}
+
+func (s *RTSPServer) handleSetup(conn net.Conn, streamUUID string) {
+	response := "RTSP/1.0 200 OK\r\n" +
+		"CSeq: 1\r\n" +
+		"Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n" +
+		"Session: 12345678\r\n" +
+		"\r\n"
+	conn.Write([]byte(response))
+}
+
+func (s *RTSPServer) handlePlay(conn net.Conn, streamUUID string) {
+	response := "RTSP/1.0 200 OK\r\n" +
+		"CSeq: 1\r\n" +
+		"Session: 12345678\r\n" +
+		"Range: npt=0.000-\r\n" +
+		"\r\n"
+	conn.Write([]byte(response))
 	
-	if server.HandleDescribe != nil {
-		server.HandleDescribe(rtspConn)
-	}
+	clientID := pseudoUUID()
 	
-	if server.HandleSetup != nil {
-		server.HandleSetup(rtspConn)
-	}
+	_, ch := Config.clAd(streamUUID)
 	
-	if server.HandlePlay != nil {
-		server.HandlePlay(rtspConn)
+	go s.streamToClient(conn, streamUUID, clientID, ch)
+}
+
+func (s *RTSPServer) handleTeardown(conn net.Conn, streamUUID string) {
+	response := "RTSP/1.0 200 OK\r\n" +
+		"CSeq: 1\r\n" +
+		"Session: 12345678\r\n" +
+		"\r\n"
+	conn.Write([]byte(response))
+}
+
+func (s *RTSPServer) streamToClient(conn net.Conn, streamUUID string, clientID string, ch chan av.Packet) {
+	defer Config.clDe(streamUUID, clientID)
+	
+	for pkt := range ch {
+		header := []byte{0x24, 0x00, 0x00, 0x00}
+		
+		
+		packetLength := len(pkt.Data)
+		header[2] = byte(packetLength >> 8)
+		header[3] = byte(packetLength & 0xFF)
+		
+		conn.Write(header)
+		conn.Write(pkt.Data)
 	}
 }
 
