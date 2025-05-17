@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/deepch/vdk/av"
 	"github.com/deepch/vdk/format/rtspv2"
@@ -85,7 +84,7 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 			streamUUID := urlPath[1:] // Remove leading slash
 			
 			s.mutex.RLock()
-			stream, ok := s.streams[streamUUID]
+			_, ok := s.streams[streamUUID]
 			s.mutex.RUnlock()
 			
 			if !ok {
@@ -112,7 +111,7 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 			streamUUID := urlPath[1:] // Remove leading slash
 			
 			s.mutex.RLock()
-			stream, ok := s.streams[streamUUID]
+			_, ok := s.streams[streamUUID]
 			s.mutex.RUnlock()
 			
 			if !ok {
@@ -128,17 +127,27 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 				disconnect: make(chan bool),
 			}
 			
-			stream.clientsMtx.Lock()
-			stream.clients[clientID] = client
-			stream.clientsMtx.Unlock()
+			s.mutex.RLock()
+			stream, ok := s.streams[streamUUID]
+			if ok {
+				stream.clientsMtx.Lock()
+				stream.clients[clientID] = client
+				stream.clientsMtx.Unlock()
+			}
+			s.mutex.RUnlock()
 			
 			_, ch := Config.clAd(streamUUID)
 			
 			go func() {
 				defer func() {
-					stream.clientsMtx.Lock()
-					delete(stream.clients, clientID)
-					stream.clientsMtx.Unlock()
+					s.mutex.RLock()
+					stream, ok := s.streams[streamUUID]
+					if ok {
+						stream.clientsMtx.Lock()
+						delete(stream.clients, clientID)
+						stream.clientsMtx.Unlock()
+					}
+					s.mutex.RUnlock()
 					Config.clDe(streamUUID, clientID)
 				}()
 				
@@ -159,13 +168,24 @@ func (s *RTSPServer) handleConnection(conn net.Conn) {
 		HandleOptions: func(conn *rtspv2.Conn) {
 		},
 		HandleSetup: func(conn *rtspv2.Conn) {
-			conn.protocol = rtspv2.TCPTransferPassive
 		},
 	}
 	
-	err := server.handleConn(rtspConn)
-	if err != nil {
-		log.Printf("RTSP connection handling error: %v", err)
+	
+	if server.HandleOptions != nil {
+		server.HandleOptions(rtspConn)
+	}
+	
+	if server.HandleDescribe != nil {
+		server.HandleDescribe(rtspConn)
+	}
+	
+	if server.HandleSetup != nil {
+		server.HandleSetup(rtspConn)
+	}
+	
+	if server.HandlePlay != nil {
+		server.HandlePlay(rtspConn)
 	}
 }
 
