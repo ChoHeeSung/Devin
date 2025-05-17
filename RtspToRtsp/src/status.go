@@ -14,6 +14,7 @@ var startTime = time.Now()
 type StreamStatusInfo struct {
 	UUID           string    `json:"uuid"`
 	URL            string    `json:"url"`
+	RTSPURL        string    `json:"rtsp_url"`
 	Status         bool      `json:"status"`
 	OnDemand       bool      `json:"on_demand"`
 	DisableAudio   bool      `json:"disable_audio"`
@@ -41,9 +42,12 @@ func HandleStreamStatus(w http.ResponseWriter, r *http.Request) {
 
 	// StreamST 구조체의 모든 필드를 StreamStatusInfo로 복사
 	for uuid, stream := range Config.Streams {
+		rtspURL, _ := GetRTSPURL(uuid, r.Host)
+		
 		status := StreamStatusInfo{
 			UUID:           uuid,
 			URL:            stream.URL,
+			RTSPURL:        rtspURL,
 			Status:         stream.Status,
 			OnDemand:       stream.OnDemand,
 			DisableAudio:   stream.DisableAudio,
@@ -77,9 +81,12 @@ func HandleSingleStreamStatus(w http.ResponseWriter, r *http.Request, uuid strin
 	}
 
 	// StreamST 구조체의 모든 필드를 StreamStatusInfo로 복사
+	rtspURL, _ := GetRTSPURL(uuid, r.Host)
+	
 	status := StreamStatusInfo{
 		UUID:           uuid,
 		URL:            stream.URL,
+		RTSPURL:        rtspURL,
 		Status:         stream.Status,
 		OnDemand:       stream.OnDemand,
 		DisableAudio:   stream.DisableAudio,

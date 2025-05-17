@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// FFmpegStream represents a single RTSP stream
-type FFmpegStream struct {
+// GStreamerStream represents a single RTSP stream
+type GStreamerStream struct {
 	UUID         string
 	URL          string
 	OnDemand     bool
@@ -19,11 +19,11 @@ type FFmpegStream struct {
 	StartTime    time.Time
 	Viewers      int
 	LowLatency   bool
-	FFmpegCmd    *exec.Cmd
+	GstCmd       *exec.Cmd
 }
 
 var (
-	streams        map[string]*FFmpegStream
+	streams        map[string]*GStreamerStream
 	serverMutex    sync.RWMutex
 	serverPort     string
 	serverStarted  time.Time
@@ -39,18 +39,18 @@ func StartGStreamerServer(port string) error {
 		return fmt.Errorf("스트림 디렉토리 생성 실패: %v", err)
 	}
 	
-	streams = make(map[string]*FFmpegStream)
+	streams = make(map[string]*GStreamerStream)
 	serverPort = port
 	serverStarted = time.Now()
 	serverRunning = true
 	
-	cmd := exec.Command("ffmpeg", "-version")
+	cmd := exec.Command("gst-launch-1.0", "--version")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("FFmpeg 확인 실패: %v", err)
+		return fmt.Errorf("GStreamer 확인 실패: %v", err)
 	}
 	
-	log.Printf("FFmpeg 버전: %s", string(output))
+	log.Printf("GStreamer 버전: %s", string(output))
 	log.Printf("RTSP 서버가 포트 %s에서 시작되었습니다", port)
 	return nil
 }
@@ -66,9 +66,9 @@ func StopGStreamerServer() {
 	log.Println("RTSP 서버 종료 중...")
 
 	for uuid, stream := range streams {
-		if stream.FFmpegCmd != nil && stream.FFmpegCmd.Process != nil {
+		if stream.GstCmd != nil && stream.GstCmd.Process != nil {
 			log.Printf("스트림 종료 중: %s", uuid)
-			stream.FFmpegCmd.Process.Kill()
+			stream.GstCmd.Process.Kill()
 		}
 	}
 	
@@ -97,7 +97,7 @@ func RegisterStream(uuid string, url string, onDemand bool) error {
 		}
 	}
 
-	streams[uuid] = &FFmpegStream{
+	streams[uuid] = &GStreamerStream{
 		UUID:        uuid,
 		URL:         url,
 		OnDemand:    onDemand,
@@ -105,7 +105,7 @@ func RegisterStream(uuid string, url string, onDemand bool) error {
 		StartTime:   time.Now(),
 		Viewers:     0,
 		LowLatency:  true,
-		FFmpegCmd:   nil,
+		GstCmd:      nil,
 	}
 
 	log.Printf("RTSP 스트림 등록됨: %s", uuid)
@@ -136,37 +136,27 @@ func startStream(uuid string) error {
 	}
 
 	// Check if the stream is already running
-	if stream.FFmpegCmd != nil && stream.FFmpegCmd.Process != nil {
+	if stream.GstCmd != nil && stream.GstCmd.Process != nil {
 		return nil // Stream already running
 	}
 
-	outputURL := fmt.Sprintf("rtsp://0.0.0.0:%s/%s", serverPort, uuid)
-	
-	// 1. Connects to the source RTSP stream
-	args := []string{
-		"-nostdin",
-		"-loglevel", "warning",
-		"-rtsp_transport", "tcp",
-		"-i", stream.URL,
-		"-c:v", "copy",
-		"-c:a", "copy",
-		"-f", "rtsp",
-		"-rtsp_transport", "tcp",
-		"-muxdelay", "0.1",
-		outputURL,
-	}
+	pipeline := fmt.Sprintf(
+		"rtspsrc location=%s latency=0 buffer-mode=0 drop-on-latency=true protocols=tcp do-retransmission=false ! " +
+		"rtph264depay ! h264parse ! rtph264pay name=pay0 config-interval=1 pt=96 ! " +
+		"rtspsink protocols=tcp service=%s path=/%s",
+		stream.URL, serverPort, uuid)
 
-	log.Printf("Starting FFmpeg for stream %s: ffmpeg %s", uuid, strings.Join(args, " "))
+	log.Printf("Starting GStreamer for stream %s: %s", uuid, pipeline)
 	
-	cmd := exec.Command("ffmpeg", args...)
+	cmd := exec.Command("gst-launch-1.0", "-v", pipeline)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("FFmpeg 시작 실패: %v", err)
+		return fmt.Errorf("GStreamer 시작 실패: %v", err)
 	}
 
-	stream.FFmpegCmd = cmd
+	stream.GstCmd = cmd
 	stream.Status = true
 	stream.StartTime = time.Now()
 
@@ -188,11 +178,11 @@ func StopStream(uuid string) error {
 		return fmt.Errorf("스트림을 찾을 수 없습니다: %s", uuid)
 	}
 
-	if stream.FFmpegCmd != nil && stream.FFmpegCmd.Process != nil {
-		if err := stream.FFmpegCmd.Process.Kill(); err != nil {
-			return fmt.Errorf("FFmpeg 종료 실패: %v", err)
+	if stream.GstCmd != nil && stream.GstCmd.Process != nil {
+		if err := stream.GstCmd.Process.Kill(); err != nil {
+			return fmt.Errorf("GStreamer 종료 실패: %v", err)
 		}
-		stream.FFmpegCmd = nil
+		stream.GstCmd = nil
 	}
 
 	stream.Status = false
@@ -200,7 +190,7 @@ func StopStream(uuid string) error {
 	return nil
 }
 
-func GetStreamStatus(uuid string) (*FFmpegStream, error) {
+func GetStreamStatus(uuid string) (*GStreamerStream, error) {
 	serverMutex.RLock()
 	defer serverMutex.RUnlock()
 
@@ -216,7 +206,7 @@ func GetStreamStatus(uuid string) (*FFmpegStream, error) {
 	return stream, nil
 }
 
-func GetAllStreams() map[string]*FFmpegStream {
+func GetAllStreams() map[string]*GStreamerStream {
 	serverMutex.RLock()
 	defer serverMutex.RUnlock()
 
@@ -224,7 +214,7 @@ func GetAllStreams() map[string]*FFmpegStream {
 		return nil
 	}
 
-	result := make(map[string]*FFmpegStream)
+	result := make(map[string]*GStreamerStream)
 	for uuid, stream := range streams {
 		result[uuid] = stream
 	}
