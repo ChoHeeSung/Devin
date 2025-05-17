@@ -3,273 +3,241 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
-type GStreamerServer struct {
-	Port      string
-	Streams   map[string]*GStreamerStream
-	mutex     sync.RWMutex
-	startTime time.Time
-	isRunning bool
-	processes map[string]*os.Process
-}
-
+// GStreamerStream represents a single RTSP stream
 type GStreamerStream struct {
-	UUID       string
-	URL        string
-	OnDemand   bool
-	Status     bool
-	Process    *os.Process
-	StartTime  time.Time
-	Viewers    int
-	LowLatency bool
+	UUID         string
+	URL          string
+	OnDemand     bool
+	Status       bool
+	StartTime    time.Time
+	Viewers      int
+	LowLatency   bool
+	GstPipeline  *exec.Cmd
 }
 
-var gstServer *GStreamerServer
+var (
+	streams        map[string]*GStreamerStream
+	serverMutex    sync.RWMutex
+	serverPort     string
+	serverStarted  time.Time
+	serverRunning  bool
+)
 
 func StartGStreamerServer(port string) error {
-	rtspDir := "/tmp/rtsp-server"
-	if err := os.MkdirAll(rtspDir, 0755); err != nil {
-		return fmt.Errorf("failed to create RTSP server directory: %v", err)
-	}
+	serverMutex.Lock()
+	defer serverMutex.Unlock()
+	
+	streams = make(map[string]*GStreamerStream)
+	serverPort = port
+	serverStarted = time.Now()
+	serverRunning = true
 
-	gstServer = &GStreamerServer{
-		Port:      port,
-		Streams:   make(map[string]*GStreamerStream),
-		startTime: time.Now(),
-		isRunning: true,
-		processes: make(map[string]*os.Process),
-	}
-
-	log.Printf("GStreamer RTSP server starting on port %s", port)
-
-	scriptPath := filepath.Join(rtspDir, "start-rtsp-server.sh")
-	scriptContent := fmt.Sprintf(`#!/bin/bash
-# Start the RTSP server using gst-rtsp-server-1.0
-test-launch "( videotestsrc is-live=1 ! video/x-raw,width=640,height=480 ! videoconvert ! x264enc ! rtph264pay name=pay0 pt=96 )" &
-echo "RTSP server started on port %s"
-# Keep the script running
-while true; do
-  sleep 10
-done
-`, port)
-	
-	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
-		return fmt.Errorf("failed to create RTSP server script: %v", err)
-	}
-	
-	cmd := exec.Command("/bin/bash", scriptPath)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start RTSP server: %v", err)
-	}
-	
-	gstServer.processes["server"] = cmd.Process
-	
+	log.Printf("GStreamer RTSP 서버가 포트 %s에서 시작되었습니다", port)
 	return nil
 }
 
 func StopGStreamerServer() {
-	if gstServer != nil && gstServer.isRunning {
-		log.Println("Stopping GStreamer RTSP server")
-		gstServer.mutex.Lock()
-		defer gstServer.mutex.Unlock()
-		
-		for uuid, stream := range gstServer.Streams {
-			if stream.Process != nil {
-				log.Printf("Stopping stream: %s", uuid)
-				stream.Process.Signal(syscall.SIGTERM)
-			}
-		}
-		
-		if serverProcess, exists := gstServer.processes["server"]; exists {
-			serverProcess.Signal(syscall.SIGTERM)
-		}
-		
-		gstServer.isRunning = false
-		gstServer = nil
+	serverMutex.Lock()
+	defer serverMutex.Unlock()
+
+	if !serverRunning {
+		return
 	}
+
+	log.Println("GStreamer RTSP 서버 종료 중...")
+
+	for uuid, stream := range streams {
+		if stream.GstPipeline != nil && stream.GstPipeline.Process != nil {
+			log.Printf("스트림 종료 중: %s", uuid)
+			stream.GstPipeline.Process.Kill()
+		}
+	}
+
+	serverRunning = false
+	log.Println("GStreamer RTSP 서버가 종료되었습니다")
 }
 
 func RegisterStream(uuid string, url string, onDemand bool) error {
-	if gstServer == nil || !gstServer.isRunning {
-		return fmt.Errorf("GStreamer RTSP server not running")
+	serverMutex.Lock()
+	defer serverMutex.Unlock()
+
+	if !serverRunning {
+		return fmt.Errorf("RTSP 서버가 실행 중이 아닙니다")
 	}
 
-	gstServer.mutex.Lock()
-	defer gstServer.mutex.Unlock()
-
-	for existingUUID := range gstServer.Streams {
+	for existingUUID := range streams {
 		if strings.EqualFold(existingUUID, uuid) {
-			log.Printf("Stream already registered with different case: %s vs %s", existingUUID, uuid)
+			log.Printf("스트림이 이미 다른 대소문자로 등록되어 있습니다: %s vs %s", existingUUID, uuid)
 			return nil
 		}
 	}
 
-	streamDir := filepath.Join("/tmp/rtsp-server", uuid)
-	if err := os.MkdirAll(streamDir, 0755); err != nil {
-		return fmt.Errorf("failed to create stream directory: %v", err)
+	streams[uuid] = &GStreamerStream{
+		UUID:        uuid,
+		URL:         url,
+		OnDemand:    onDemand,
+		Status:      false,
+		StartTime:   time.Now(),
+		Viewers:     0,
+		LowLatency:  true,
+		GstPipeline: nil,
 	}
 
-	scriptPath := filepath.Join(streamDir, "start-stream.sh")
-	
-	pipelineStr := fmt.Sprintf(`#!/bin/bash
-# Start the RTSP stream using gst-launch-1.0
-gst-launch-1.0 -v \
-  rtspsrc location="%s" latency=0 buffer-mode=0 drop-on-latency=true protocols=tcp do-retransmission=false ! \
-  rtph264depay ! h264parse ! \
-  rtph264pay name=pay0 config-interval=1 pt=96 ! \
-  udpsink host=127.0.0.1 port=%s
-`, url, gstServer.Port)
-
-	if err := os.WriteFile(scriptPath, []byte(pipelineStr), 0755); err != nil {
-		return fmt.Errorf("failed to create stream script: %v", err)
-	}
-
-	gstServer.Streams[uuid] = &GStreamerStream{
-		UUID:       uuid,
-		URL:        url,
-		OnDemand:   onDemand,
-		Status:     true,
-		StartTime:  time.Now(),
-		Viewers:    0,
-		LowLatency: true,
-	}
+	log.Printf("RTSP 스트림 등록됨: %s", uuid)
 
 	if !onDemand {
-		if err := startStream(uuid); err != nil {
-			log.Printf("Failed to start stream %s: %v", uuid, err)
-		}
+		go func() {
+			if err := startStream(uuid); err != nil {
+				log.Printf("스트림 시작 실패 %s: %v", uuid, err)
+			}
+		}()
 	}
 
-	log.Printf("Registered GStreamer RTSP stream: %s", uuid)
 	return nil
 }
 
 func startStream(uuid string) error {
-	if gstServer == nil || !gstServer.isRunning {
-		return fmt.Errorf("GStreamer RTSP server not running")
+	serverMutex.Lock()
+	defer serverMutex.Unlock()
+
+	if !serverRunning {
+		return fmt.Errorf("RTSP 서버가 실행 중이 아닙니다")
 	}
 
-	gstServer.mutex.Lock()
-	defer gstServer.mutex.Unlock()
-
-	stream, exists := gstServer.Streams[uuid]
+	stream, exists := streams[uuid]
 	if !exists {
-		return fmt.Errorf("stream not found: %s", uuid)
+		return fmt.Errorf("스트림을 찾을 수 없습니다: %s", uuid)
 	}
 
-	if stream.Process != nil {
-		return nil
+	// Check if the stream is already running
+	if stream.GstPipeline != nil && stream.GstPipeline.Process != nil {
+		return nil // Stream already running
 	}
 
-	scriptPath := filepath.Join("/tmp/rtsp-server", uuid, "start-stream.sh")
-	cmd := exec.Command("/bin/bash", scriptPath)
+	pipelineStr := fmt.Sprintf(
+		"gst-launch-1.0 -v rtspsrc location=\"%s\" latency=0 buffer-mode=0 "+
+			"drop-on-latency=true protocols=tcp do-retransmission=false ! "+
+			"rtph264depay ! h264parse ! rtph264pay config-interval=1 pt=96 ! "+
+			"udpsink host=127.0.0.1 port=%s sync=false async=false",
+		stream.URL, serverPort)
+
+	rtspServerPipeline := fmt.Sprintf(
+		"gst-rtsp-server rtsp-port=%s service=%s "+
+			"mount-point=/%s pipeline=\"( "+
+			"udpsrc port=%s ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! "+
+			"rtph264depay ! h264parse ! rtph264pay name=pay0 config-interval=1 pt=96 )\"",
+		serverPort, serverPort, uuid, serverPort)
+
+	cmd := exec.Command("bash", "-c", pipelineStr)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start stream: %v", err)
+		return fmt.Errorf("GStreamer 파이프라인 시작 실패: %v", err)
 	}
 
-	stream.Process = cmd.Process
-	stream.StartTime = time.Now()
-	stream.Status = true
+	serverCmd := exec.Command("bash", "-c", rtspServerPipeline)
+	if err := serverCmd.Start(); err != nil {
+		cmd.Process.Kill() // Kill the first pipeline if the second fails
+		return fmt.Errorf("RTSP 서버 파이프라인 시작 실패: %v", err)
+	}
 
-	log.Printf("Started stream: %s", uuid)
+	stream.GstPipeline = cmd
+	stream.Status = true
+	stream.StartTime = time.Now()
+
+	log.Printf("스트림 시작됨: %s", uuid)
 	return nil
 }
 
 func StopStream(uuid string) error {
-	if gstServer == nil || !gstServer.isRunning {
-		return fmt.Errorf("GStreamer RTSP server not running")
+	serverMutex.Lock()
+	defer serverMutex.Unlock()
+
+	if !serverRunning {
+		return fmt.Errorf("RTSP 서버가 실행 중이 아닙니다")
 	}
 
-	gstServer.mutex.Lock()
-	defer gstServer.mutex.Unlock()
-
-	stream, exists := gstServer.Streams[uuid]
+	stream, exists := streams[uuid]
 	if !exists {
-		return fmt.Errorf("stream not found: %s", uuid)
+		return fmt.Errorf("스트림을 찾을 수 없습니다: %s", uuid)
 	}
 
-	if stream.Process != nil {
-		if err := stream.Process.Signal(syscall.SIGTERM); err != nil {
-			return fmt.Errorf("failed to stop stream: %v", err)
+	if stream.GstPipeline != nil && stream.GstPipeline.Process != nil {
+		if err := stream.GstPipeline.Process.Kill(); err != nil {
+			return fmt.Errorf("GStreamer 파이프라인 종료 실패: %v", err)
 		}
-		stream.Process = nil
-		stream.Status = false
+		stream.GstPipeline = nil
 	}
 
-	log.Printf("Stopped stream: %s", uuid)
+	stream.Status = false
+	log.Printf("스트림 종료됨: %s", uuid)
 	return nil
 }
 
 func GetStreamStatus(uuid string) (*GStreamerStream, error) {
-	if gstServer == nil || !gstServer.isRunning {
-		return nil, fmt.Errorf("GStreamer RTSP server not running")
+	serverMutex.RLock()
+	defer serverMutex.RUnlock()
+
+	if !serverRunning {
+		return nil, fmt.Errorf("RTSP 서버가 실행 중이 아닙니다")
 	}
 
-	gstServer.mutex.RLock()
-	defer gstServer.mutex.RUnlock()
-
-	stream, exists := gstServer.Streams[uuid]
+	stream, exists := streams[uuid]
 	if !exists {
-		return nil, fmt.Errorf("stream not found: %s", uuid)
+		return nil, fmt.Errorf("스트림을 찾을 수 없습니다: %s", uuid)
 	}
 
 	return stream, nil
 }
 
 func GetAllStreams() map[string]*GStreamerStream {
-	if gstServer == nil || !gstServer.isRunning {
+	serverMutex.RLock()
+	defer serverMutex.RUnlock()
+
+	if !serverRunning {
 		return nil
 	}
 
-	gstServer.mutex.RLock()
-	defer gstServer.mutex.RUnlock()
-
-	streams := make(map[string]*GStreamerStream)
-	for uuid, stream := range gstServer.Streams {
-		streams[uuid] = stream
+	result := make(map[string]*GStreamerStream)
+	for uuid, stream := range streams {
+		result[uuid] = stream
 	}
 
-	return streams
+	return result
 }
 
 func GetRTSPURL(uuid string, hostname string) (string, error) {
-	if gstServer == nil || !gstServer.isRunning {
-		return "", fmt.Errorf("GStreamer RTSP server not running")
+	serverMutex.RLock()
+	defer serverMutex.RUnlock()
+
+	if !serverRunning {
+		return "", fmt.Errorf("RTSP 서버가 실행 중이 아닙니다")
 	}
 
-	gstServer.mutex.RLock()
-	defer gstServer.mutex.RUnlock()
-
-	_, exists := gstServer.Streams[uuid]
+	_, exists := streams[uuid]
 	if !exists {
-		return "", fmt.Errorf("stream not found: %s", uuid)
+		return "", fmt.Errorf("스트림을 찾을 수 없습니다: %s", uuid)
 	}
 
-	return fmt.Sprintf("rtsp://%s:%s/%s", hostname, gstServer.Port, uuid), nil
+	return fmt.Sprintf("rtsp://%s:%s/%s", hostname, serverPort, uuid), nil
 }
 
+// RunIFNotRun starts a stream if it's not already running
 func RunIFNotRun(uuid string) error {
-	if gstServer == nil || !gstServer.isRunning {
-		return fmt.Errorf("GStreamer RTSP server not running")
-	}
-
-	gstServer.mutex.RLock()
-	stream, exists := gstServer.Streams[uuid]
-	gstServer.mutex.RUnlock()
+	serverMutex.RLock()
+	stream, exists := streams[uuid]
+	onDemand := exists && stream.OnDemand
+	serverMutex.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("stream not found: %s", uuid)
+		return fmt.Errorf("스트림을 찾을 수 없습니다: %s", uuid)
 	}
 
-	if stream.OnDemand && stream.Process == nil {
+	if onDemand {
 		return startStream(uuid)
 	}
 

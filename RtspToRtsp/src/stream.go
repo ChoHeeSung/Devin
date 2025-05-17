@@ -19,9 +19,6 @@ var (
 func serveStreams() {
 	for k, v := range Config.Streams {
 		RegisterStream(k, v.URL, v.OnDemand)
-		if !v.OnDemand {
-			go RTSPWorkerLoop(k, v.URL, v.OnDemand, v.DisableAudio, v.Debug)
-		}
 	}
 }
 func RTSPWorkerLoop(name, url string, OnDemand, DisableAudio, Debug bool) {
