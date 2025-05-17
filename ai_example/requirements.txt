@@ -1,9 +1,0 @@
-   langchain
-   langgraph
-   langchain-docling
-   langchain-qdrant
-   langchain-text-splitters
-   langchain-ollama
-   langchain-community
-   sentence-transformers
-   loguru>=0.7.0
