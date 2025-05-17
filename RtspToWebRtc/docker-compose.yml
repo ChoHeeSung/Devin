@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  mtx-streaming:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mtx-streaming
+    volumes: 
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/go/src/app/logs
+      - ./src/config.json:/go/src/app/config.json:ro
+    environment:
+      - GO111MODULE=on
+      - GIN_MODE=release
+    restart: unless-stopped
+    network_mode: host
+
+networks:
+  default:
+    driver: bridge 
