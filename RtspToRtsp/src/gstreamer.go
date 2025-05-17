@@ -3,12 +3,16 @@ package main
 import (
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+	"net/http"
+	"io/ioutil"
+	"bufio"
+	"net"
+	"bytes"
 )
 
 // GStreamerStream represents a single RTSP stream
@@ -21,6 +25,7 @@ type GStreamerStream struct {
 	Viewers      int
 	LowLatency   bool
 	GstCmd       *exec.Cmd
+	RTSPListener net.Listener
 }
 
 var (
@@ -29,8 +34,16 @@ var (
 	serverPort     string
 	serverStarted  time.Time
 	serverRunning  bool
-	rtspServerCmd  *exec.Cmd
+	rtspServer     *RTSPServer
 )
+
+type RTSPServer struct {
+	listener net.Listener
+	port     string
+	streams  map[string]*GStreamerStream
+	mutex    sync.RWMutex
+	running  bool
+}
 
 func StartGStreamerServer(port string) error {
 	serverMutex.Lock()
@@ -53,9 +66,317 @@ func StartGStreamerServer(port string) error {
 	}
 	log.Printf("GStreamer 버전: %s", string(output))
 	
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	if err != nil {
+		return fmt.Errorf("RTSP 서버 시작 실패: %v", err)
+	}
+	
+	rtspServer = &RTSPServer{
+		listener: listener,
+		port:     port,
+		streams:  streams,
+		running:  true,
+	}
+	
+	go rtspServer.serve()
 	
 	log.Printf("GStreamer RTSP 서버 준비 완료 (포트: %s)", port)
 	return nil
+}
+
+func (s *RTSPServer) serve() {
+	for s.running {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if s.running {
+				log.Printf("RTSP 연결 수락 실패: %v", err)
+			}
+			continue
+		}
+		
+		go s.handleConnection(conn)
+	}
+}
+
+func (s *RTSPServer) handleConnection(conn net.Conn) {
+	defer conn.Close()
+	
+	reader := bufio.NewReader(conn)
+	
+	for {
+		request, err := readRTSPRequest(reader)
+		if err != nil {
+			log.Printf("RTSP 요청 읽기 실패: %v", err)
+			return
+		}
+		
+		log.Printf("RTSP 요청 수신: %s", request.Method)
+		
+		method := request.Method
+		path := request.Path
+		cseq := request.CSeq
+		
+		streamUUID := strings.TrimPrefix(path, "/")
+		
+		switch method {
+		case "OPTIONS":
+			response := fmt.Sprintf("RTSP/1.0 200 OK\r\n"+
+				"CSeq: %s\r\n"+
+				"Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n"+
+				"\r\n", cseq)
+			conn.Write([]byte(response))
+			
+		case "DESCRIBE":
+			s.mutex.RLock()
+			stream, exists := s.streams[streamUUID]
+			s.mutex.RUnlock()
+			
+			if !exists {
+				s.mutex.RLock()
+				for uuid, str := range s.streams {
+					if strings.EqualFold(uuid, streamUUID) {
+						stream = str
+						exists = true
+						streamUUID = uuid
+						break
+					}
+				}
+				s.mutex.RUnlock()
+			}
+			
+			if !exists {
+				response := fmt.Sprintf("RTSP/1.0 404 Stream Not Found\r\n"+
+					"CSeq: %s\r\n"+
+					"\r\n", cseq)
+				conn.Write([]byte(response))
+				continue
+			}
+			
+			if stream.OnDemand && !stream.Status {
+				go startStream(streamUUID)
+			}
+			
+			sdp := fmt.Sprintf("v=0\r\n"+
+				"o=- 0 0 IN IP4 127.0.0.1\r\n"+
+				"s=RTSP Server\r\n"+
+				"t=0 0\r\n"+
+				"m=video 0 RTP/AVP 96\r\n"+
+				"a=rtpmap:96 H264/90000\r\n"+
+				"a=control:track1\r\n")
+			
+			response := fmt.Sprintf("RTSP/1.0 200 OK\r\n"+
+				"CSeq: %s\r\n"+
+				"Content-Type: application/sdp\r\n"+
+				"Content-Length: %d\r\n"+
+				"\r\n%s", cseq, len(sdp), sdp)
+			conn.Write([]byte(response))
+			
+		case "SETUP":
+			s.mutex.RLock()
+			stream, exists := s.streams[streamUUID]
+			s.mutex.RUnlock()
+			
+			if !exists {
+				s.mutex.RLock()
+				for uuid, str := range s.streams {
+					if strings.EqualFold(uuid, streamUUID) {
+						stream = str
+						exists = true
+						streamUUID = uuid
+						break
+					}
+				}
+				s.mutex.RUnlock()
+			}
+			
+			if !exists {
+				response := fmt.Sprintf("RTSP/1.0 404 Stream Not Found\r\n"+
+					"CSeq: %s\r\n"+
+					"\r\n", cseq)
+				conn.Write([]byte(response))
+				continue
+			}
+			
+			if stream.OnDemand && !stream.Status {
+				go startStream(streamUUID)
+			}
+			
+			transport := request.Headers["Transport"]
+			clientPorts := "8000-8001" // Default
+			
+			if transport != "" {
+				parts := strings.Split(transport, ";")
+				for _, part := range parts {
+					if strings.HasPrefix(part, "client_port=") {
+						clientPorts = strings.TrimPrefix(part, "client_port=")
+						break
+					}
+				}
+			}
+			
+			sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+			
+			response := fmt.Sprintf("RTSP/1.0 200 OK\r\n"+
+				"CSeq: %s\r\n"+
+				"Transport: RTP/AVP;unicast;client_port=%s;server_port=5000-5001\r\n"+
+				"Session: %s\r\n"+
+				"\r\n", cseq, clientPorts, sessionID)
+			conn.Write([]byte(response))
+			
+		case "PLAY":
+			s.mutex.RLock()
+			stream, exists := s.streams[streamUUID]
+			s.mutex.RUnlock()
+			
+			if !exists {
+				s.mutex.RLock()
+				for uuid, str := range s.streams {
+					if strings.EqualFold(uuid, streamUUID) {
+						stream = str
+						exists = true
+						streamUUID = uuid
+						break
+					}
+				}
+				s.mutex.RUnlock()
+			}
+			
+			if !exists {
+				response := fmt.Sprintf("RTSP/1.0 404 Stream Not Found\r\n"+
+					"CSeq: %s\r\n"+
+					"\r\n", cseq)
+				conn.Write([]byte(response))
+				continue
+			}
+			
+			if stream.OnDemand && !stream.Status {
+				go startStream(streamUUID)
+			}
+			
+			sessionID := request.Headers["Session"]
+			
+			response := fmt.Sprintf("RTSP/1.0 200 OK\r\n"+
+				"CSeq: %s\r\n"+
+				"Session: %s\r\n"+
+				"Range: npt=0.000-\r\n"+
+				"\r\n", cseq, sessionID)
+			conn.Write([]byte(response))
+			
+			s.mutex.Lock()
+			stream.Viewers++
+			s.mutex.Unlock()
+			
+		case "TEARDOWN":
+			s.mutex.RLock()
+			stream, exists := s.streams[streamUUID]
+			s.mutex.RUnlock()
+			
+			if !exists {
+				response := fmt.Sprintf("RTSP/1.0 404 Stream Not Found\r\n"+
+					"CSeq: %s\r\n"+
+					"\r\n", cseq)
+				conn.Write([]byte(response))
+				continue
+			}
+			
+			sessionID := request.Headers["Session"]
+			
+			response := fmt.Sprintf("RTSP/1.0 200 OK\r\n"+
+				"CSeq: %s\r\n"+
+				"Session: %s\r\n"+
+				"\r\n", cseq, sessionID)
+			conn.Write([]byte(response))
+			
+			s.mutex.Lock()
+			if stream.Viewers > 0 {
+				stream.Viewers--
+			}
+			s.mutex.Unlock()
+			
+			if stream.OnDemand && stream.Viewers == 0 {
+				go StopStream(streamUUID)
+			}
+			
+			return
+			
+		default:
+			response := fmt.Sprintf("RTSP/1.0 405 Method Not Allowed\r\n"+
+				"CSeq: %s\r\n"+
+				"\r\n", cseq)
+			conn.Write([]byte(response))
+		}
+	}
+}
+
+type RTSPRequest struct {
+	Method   string
+	Path     string
+	Version  string
+	Headers  map[string]string
+	CSeq     string
+	Body     string
+}
+
+func readRTSPRequest(reader *bufio.Reader) (*RTSPRequest, error) {
+	requestLine, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	
+	requestLine = strings.TrimSpace(requestLine)
+	parts := strings.Split(requestLine, " ")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("잘못된 RTSP 요청 라인: %s", requestLine)
+	}
+	
+	request := &RTSPRequest{
+		Method:  parts[0],
+		Path:    parts[1],
+		Version: parts[2],
+		Headers: make(map[string]string),
+	}
+	
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		
+		headerParts := strings.SplitN(line, ":", 2)
+		if len(headerParts) != 2 {
+			continue
+		}
+		
+		key := strings.TrimSpace(headerParts[0])
+		value := strings.TrimSpace(headerParts[1])
+		request.Headers[key] = value
+		
+		if key == "CSeq" {
+			request.CSeq = value
+		}
+	}
+	
+	if contentLengthStr, ok := request.Headers["Content-Length"]; ok {
+		var contentLength int
+		fmt.Sscanf(contentLengthStr, "%d", &contentLength)
+		
+		if contentLength > 0 {
+			body := make([]byte, contentLength)
+			_, err := reader.Read(body)
+			if err != nil {
+				return nil, err
+			}
+			request.Body = string(body)
+		}
+	}
+	
+	log.Printf("RTSP 요청 파싱 완료: %s %s", request.Method, request.Path)
+	return request, nil
 }
 
 func StopGStreamerServer() {
@@ -68,10 +389,18 @@ func StopGStreamerServer() {
 
 	log.Println("RTSP 서버 종료 중...")
 
+	if rtspServer != nil && rtspServer.running {
+		rtspServer.running = false
+		rtspServer.listener.Close()
+	}
+
 	for uuid, stream := range streams {
 		if stream.GstCmd != nil && stream.GstCmd.Process != nil {
 			log.Printf("스트림 종료 중: %s", uuid)
 			stream.GstCmd.Process.Kill()
+		}
+		if stream.RTSPListener != nil {
+			stream.RTSPListener.Close()
 		}
 	}
 
@@ -139,28 +468,45 @@ func startStream(uuid string) error {
 		return nil // Stream already running
 	}
 
-	rtspSocket, err := net.Listen("tcp", fmt.Sprintf(":%s", serverPort))
-	if err != nil {
-		return fmt.Errorf("RTSP 소켓 생성 실패: %v", err)
-	}
-	
-	rtspSocket.Close()
-	
 	pipeline := fmt.Sprintf(
 		"rtspsrc location=%s latency=0 buffer-mode=0 drop-on-latency=true protocols=tcp do-retransmission=false ! " +
-		"rtph264depay ! h264parse ! rtph264pay config-interval=1 pt=96 ! " +
-		"tcpserversink host=0.0.0.0 port=%s",
-		stream.URL, serverPort)
+		"rtph264depay ! h264parse ! rtph264pay config-interval=1 pt=96 name=pay0",
+		stream.URL)
 	
 	log.Printf("Starting GStreamer pipeline for %s: %s", uuid, pipeline)
 	
-	args := append([]string{"-v"}, strings.Split(pipeline, " ")...)
-	cmd := exec.Command("gst-launch-1.0", args...)
+	pipelineFile, err := ioutil.TempFile("", "pipeline-*.launch")
+	if err != nil {
+		return fmt.Errorf("파이프라인 파일 생성 실패: %v", err)
+	}
+	defer os.Remove(pipelineFile.Name())
+	
+	if _, err := pipelineFile.WriteString(pipeline); err != nil {
+		return fmt.Errorf("파이프라인 파일 작성 실패: %v", err)
+	}
+	pipelineFile.Close()
+	
+	cmd := exec.Command("test-launch", pipelineFile.Name())
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), fmt.Sprintf("GST_RTSP_SERVER_PORT=%s", serverPort))
 	
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("GStreamer 시작 실패: %v", err)
+		log.Printf("test-launch 실행 실패, gst-rtsp-server 직접 실행 시도: %v", err)
+		
+		args := []string{
+			"-v",
+			"--gst-debug=3",
+			fmt.Sprintf("( %s )", pipeline),
+		}
+		
+		cmd = exec.Command("gst-launch-1.0", args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("GStreamer 시작 실패: %v", err)
+		}
 	}
 
 	stream.GstCmd = cmd
@@ -190,6 +536,11 @@ func StopStream(uuid string) error {
 			return fmt.Errorf("GStreamer 종료 실패: %v", err)
 		}
 		stream.GstCmd = nil
+	}
+
+	if stream.RTSPListener != nil {
+		stream.RTSPListener.Close()
+		stream.RTSPListener = nil
 	}
 
 	stream.Status = false
