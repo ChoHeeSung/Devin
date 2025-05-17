@@ -40,11 +40,10 @@ func StartGStreamerServer(port string) error {
 	serverStarted = time.Now()
 	serverRunning = true
 
-	rtspServerCmd := fmt.Sprintf(
-		"test-launch \"( videotestsrc is-live=true ! video/x-raw,width=640,height=480,framerate=30/1 ! "+
-		"x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! rtph264pay name=pay0 pt=96 )\"")
-	
-	cmd := exec.Command("gst-rtsp-launch", "-p", port)
+	cmd := exec.Command("gst-launch-1.0", "-v", "videotestsrc", "is-live=true", "!", 
+		"x264enc", "tune=zerolatency", "bitrate=500", "speed-preset=superfast", "!", 
+		"rtph264pay", "name=pay0", "pt=96", "!", 
+		"udpsink", "host=127.0.0.1", "port="+port)
 	
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("RTSP 서버 시작 실패: %v", err)
