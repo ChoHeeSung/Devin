@@ -44,8 +44,9 @@ class RtspMediaFactory(GstRtspServer.RTSPMediaFactory):
             fallback_pipeline = (
                 "videotestsrc is-live=true ! "
                 "video/x-raw,width=640,height=480,framerate=30/1 ! "
-                "x264enc tune=zerolatency ! "
-                "rtph264pay name=pay0 pt=96 config-interval=1"
+                "videoconvert ! "
+                "jpegenc ! "  # Use JPEG encoding for maximum compatibility
+                "rtpjpegpay name=pay0 pt=26"
             )
             return Gst.parse_launch(fallback_pipeline)
         
@@ -83,8 +84,9 @@ class RtspMediaFactory(GstRtspServer.RTSPMediaFactory):
             fallback_pipeline = (
                 "videotestsrc is-live=true ! "
                 "video/x-raw,width=640,height=480,framerate=30/1 ! "
-                "x264enc tune=zerolatency ! "
-                "rtph264pay name=pay0 pt=96 config-interval=1"
+                "videoconvert ! "
+                "jpegenc ! "  # Use JPEG encoding for maximum compatibility
+                "rtpjpegpay name=pay0 pt=26"
             )
             return Gst.parse_launch(fallback_pipeline)
 
