@@ -110,7 +110,14 @@ class RtspServer:
             factory.set_shared(True)  # Allow multiple clients to share one stream
             factory.set_eos_shutdown(True)  # Shutdown media when EOS is received
             
-            factory.set_protocols(GstRtspServer.RTSPLowerTrans.TCP)
+            try:
+                if hasattr(GstRtspServer, 'RTSPLowerTrans') and hasattr(GstRtspServer.RTSPLowerTrans, 'TCP'):
+                    factory.set_protocols(GstRtspServer.RTSPLowerTrans.TCP)
+                    logger.info("Set RTSP protocol to TCP")
+                else:
+                    logger.warning("RTSPLowerTrans.TCP not available in this GStreamer version, using default protocol")
+            except Exception as e:
+                logger.warning(f"Failed to set RTSP protocol to TCP: {e}")
             
             if self.config.get_on_demand():
                 try:
