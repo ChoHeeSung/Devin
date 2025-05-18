@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -11,6 +12,37 @@ type RTSPStreamInfo struct {
 	UUID    string `json:"uuid"`
 	RTSPURL string `json:"rtsp_url"`
 	Status  bool   `json:"status"`
+}
+
+func GetRTSPURLForAPI(uuid string, hostname string) (string, error) {
+	if idx := strings.Index(hostname, ":"); idx > 0 {
+		hostname = hostname[:idx]
+	}
+	
+	var streamUUID string
+	var streamFound bool
+	
+	Config.mutex.RLock()
+	defer Config.mutex.RUnlock()
+	
+	for existingUUID := range Config.Streams {
+		if strings.EqualFold(existingUUID, uuid) {
+			streamUUID = existingUUID
+			streamFound = true
+			break
+		}
+	}
+	
+	if !streamFound {
+		return "", fmt.Errorf("Stream not found: %s", uuid)
+	}
+	
+	rtspPort := Config.Server.RTSPPort
+	if rtspPort[0] == ':' {
+		rtspPort = rtspPort[1:]
+	}
+	
+	return fmt.Sprintf("rtsp://%s:%s/%s", hostname, rtspPort, streamUUID), nil
 }
 
 func HandleRTSPStreamInfo(w http.ResponseWriter, r *http.Request, uuid string) {
@@ -43,7 +75,7 @@ func HandleRTSPStreamInfo(w http.ResponseWriter, r *http.Request, uuid string) {
 		}()
 	}
 
-	rtspURL, err := GetRTSPURL(streamUUID, r.Host)
+	rtspURL, err := GetRTSPURLForAPI(streamUUID, r.Host)
 	if err != nil {
 		http.Error(w, "Failed to get RTSP URL", http.StatusInternalServerError)
 		return

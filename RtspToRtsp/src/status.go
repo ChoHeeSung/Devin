@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -14,16 +16,16 @@ var startTime = time.Now()
 type StreamStatusInfo struct {
 	UUID           string    `json:"uuid"`
 	URL            string    `json:"url"`
-	RTSPURL        string    `json:"rtsp_url"`
+	RtspUrl        string    `json:"rtspUrl"`
 	Status         bool      `json:"status"`
-	OnDemand       bool      `json:"on_demand"`
-	DisableAudio   bool      `json:"disable_audio"`
+	OnDemand       bool      `json:"onDemand"`
+	DisableAudio   bool      `json:"disableAudio"`
 	Debug          bool      `json:"debug"`
-	LastError      error     `json:"last_error"`
-	LastUpdated    time.Time `json:"last_updated"`
-	ViewerCount    int       `json:"viewer_count"`
-	IsRunning      bool      `json:"is_running"`
-	ReconnectCount int       `json:"reconnect_count"`
+	LastError      error     `json:"lastError,omitempty"`
+	LastUpdated    time.Time `json:"lastUpdated"`
+	ViewerCount    int       `json:"viewerCount"`
+	IsRunning      bool      `json:"isRunning"`
+	ReconnectCount int       `json:"reconnectCount"`
 }
 
 type StatusResponse struct {
@@ -42,7 +44,17 @@ func HandleStreamStatus(w http.ResponseWriter, r *http.Request) {
 
 	// StreamST 구조체의 모든 필드를 StreamStatusInfo로 복사
 	for uuid, stream := range Config.Streams {
-		rtspURL, _ := GetRTSPURL(uuid, r.Host)
+		hostname := r.Host
+		if idx := strings.Index(hostname, ":"); idx > 0 {
+			hostname = hostname[:idx]
+		}
+		
+		rtspPort := Config.Server.RTSPPort
+		if rtspPort[0] == ':' {
+			rtspPort = rtspPort[1:]
+		}
+		
+		rtspURL := fmt.Sprintf("rtsp://%s:%s/%s", hostname, rtspPort, uuid)
 		
 		status := StreamStatusInfo{
 			UUID:           uuid,
@@ -81,7 +93,17 @@ func HandleSingleStreamStatus(w http.ResponseWriter, r *http.Request, uuid strin
 	}
 
 	// StreamST 구조체의 모든 필드를 StreamStatusInfo로 복사
-	rtspURL, _ := GetRTSPURL(uuid, r.Host)
+	hostname := r.Host
+	if idx := strings.Index(hostname, ":"); idx > 0 {
+		hostname = hostname[:idx]
+	}
+	
+	rtspPort := Config.Server.RTSPPort
+	if rtspPort[0] == ':' {
+		rtspPort = rtspPort[1:]
+	}
+	
+	rtspURL := fmt.Sprintf("rtsp://%s:%s/%s", hostname, rtspPort, uuid)
 	
 	status := StreamStatusInfo{
 		UUID:           uuid,
