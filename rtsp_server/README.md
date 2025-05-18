@@ -108,3 +108,17 @@ gst-launch-1.0 playbin uri=rtsp://localhost:8554/금곡IC
 
 - Verify GStreamer packages are installed: `dpkg -l | grep gstreamer`
 - Check if GStreamer Python bindings are available: `python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None)"`
+
+### Docker Environment
+
+- If you encounter "SDP contains no streams" error when connecting to the RTSP server:
+  - Check if the source RTSP streams are accessible from the Docker container
+  - Try using `docker-compose down && docker-compose up -d` to restart the container
+  - The server will automatically use a test pattern if the source streams are not accessible
+  - You can modify the timeout settings in the `rtsp_server.py` file
+
+- If you need to access the Docker container for debugging:
+  - Run `docker-compose exec rtsp-server bash` to get a shell in the container
+  - Use `gst-launch-1.0` to test RTSP connectivity from within the container
+
+- Make sure your Docker network allows connections to the source RTSP streams

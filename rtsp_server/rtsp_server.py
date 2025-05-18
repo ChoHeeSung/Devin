@@ -32,10 +32,13 @@ class RtspMediaFactory(GstRtspServer.RTSPMediaFactory):
         super().__init__()
         self.url = url
         self.disable_audio = disable_audio
+        self.timeout = 5
     
     def do_create_element(self, url):
-        
-        pipeline_str = f"rtspsrc location={self.url} latency=0 buffer-mode=auto protocol=tcp ! "
+        pipeline_str = (
+            f"rtspsrc location={self.url} latency=0 buffer-mode=auto "
+            f"protocols=tcp timeout={self.timeout} retry=3 ! "
+        )
         
         if self.disable_audio:
             pipeline_str += "application/x-rtp,media=video ! "
@@ -61,7 +64,15 @@ class RtspMediaFactory(GstRtspServer.RTSPMediaFactory):
         except Exception as e:
             logger.error(f"Failed to create GStreamer pipeline: {e}")
             logger.error(f"Pipeline string: {pipeline_str}")
-            return Gst.parse_launch("videotestsrc ! fakesink")
+            
+            logger.info("Using test source as fallback")
+            fallback_pipeline = (
+                "videotestsrc is-live=true ! "
+                "video/x-raw,width=640,height=480,framerate=30/1 ! "
+                "x264enc tune=zerolatency ! "
+                "rtph264pay name=pay0 pt=96 config-interval=1"
+            )
+            return Gst.parse_launch(fallback_pipeline)
 
 class RtspServer:
     def __init__(self, config, api_client):
@@ -99,9 +110,24 @@ class RtspServer:
             factory.set_shared(True)  # Allow multiple clients to share one stream
             factory.set_eos_shutdown(True)  # Shutdown media when EOS is received
             
+            factory.set_protocols(GstRtspServer.RTSPLowerTrans.TCP)
+            
             if self.config.get_on_demand():
-                factory.set_suspend_mode(GstRtspServer.RTSPSuspendMode.IDLE)
-                factory.set_transport_mode(GstRtspServer.RTSPTransportMode.PLAY)
+                try:
+                    if hasattr(GstRtspServer.RTSPSuspendMode, 'IDLE'):
+                        factory.set_suspend_mode(GstRtspServer.RTSPSuspendMode.IDLE)
+                    elif hasattr(GstRtspServer.RTSPSuspendMode, 'RESET'):
+                        factory.set_suspend_mode(GstRtspServer.RTSPSuspendMode.RESET)
+                    else:
+                        logger.warning(f"RTSPSuspendMode.IDLE and RTSPSuspendMode.RESET not available in this GStreamer version")
+                except Exception as e:
+                    logger.warning(f"Failed to set suspend mode: {e}")
+                
+                try:
+                    if hasattr(GstRtspServer.RTSPTransportMode, 'PLAY'):
+                        factory.set_transport_mode(GstRtspServer.RTSPTransportMode.PLAY)
+                except Exception as e:
+                    logger.warning(f"Failed to set transport mode: {e}")
             
             mount_point = f"/{stream_name}"
             self.mounts.add_factory(mount_point, factory)
