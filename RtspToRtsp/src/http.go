@@ -28,6 +28,7 @@ type JCodec struct {
 type StreamStatus struct {
 	UUID           string    `json:"uuid"`
 	URL            string    `json:"url"`
+	RtspUrl        string    `json:"rtspUrl"`
 	Status         bool      `json:"status"`
 	OnDemand       bool      `json:"onDemand"`
 	DisableAudio   bool      `json:"disableAudio"`
@@ -905,9 +906,17 @@ func (element *ConfigST) getStreamStatus(uuid string) StreamStatus {
 		debug = element.StreamDefaults.Debug
 	}
 
+	rtspPort := element.Server.RTSPPort
+	if rtspPort[0] == ':' {
+		rtspPort = rtspPort[1:]
+	}
+	
+	rtspURL := fmt.Sprintf("rtsp://localhost:%s/%s", rtspPort, uuid)
+	
 	return StreamStatus{
 		UUID:           uuid,
 		URL:            stream.URL,
+		RtspUrl:        rtspURL,
 		Status:         stream.Status,
 		OnDemand:       onDemand,
 		DisableAudio:   disableAudio,
