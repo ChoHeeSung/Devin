@@ -89,7 +89,21 @@ rtsp://localhost:8554/금곡IC
 
 ## Testing with GStreamer
 
-You can test the streams using GStreamer's playbin:
+You can test the streams using GStreamer:
+
+### For H.264 streams (when source streams are accessible):
+
+```bash
+gst-launch-1.0 rtspsrc location=rtsp://localhost:8554/금곡IC protocols=tcp ! application/x-rtp,media=video ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink
+```
+
+### For JPEG streams (when using test pattern fallback):
+
+```bash
+gst-launch-1.0 rtspsrc location=rtsp://localhost:8554/금곡IC protocols=tcp ! application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! jpegdec ! videoconvert ! autovideosink
+```
+
+### Simple playbin (may not work in all environments):
 
 ```bash
 gst-launch-1.0 playbin uri=rtsp://localhost:8554/금곡IC
