@@ -28,13 +28,27 @@ import threading
 import time
 
 class RtspMediaFactory(GstRtspServer.RTSPMediaFactory):
-    def __init__(self, url, disable_audio=True):
+    def __init__(self, url, disable_audio=True, use_test_source=False):
         super().__init__()
         self.url = url
         self.disable_audio = disable_audio
         self.timeout = 5
+        self.use_test_source = use_test_source
+        
+        if not IS_MACOS and not platform.system().startswith('Win'):
+            self.use_test_source = True
     
     def do_create_element(self, url):
+        if self.use_test_source:
+            logger.info(f"Using test source for {url}")
+            fallback_pipeline = (
+                "videotestsrc is-live=true ! "
+                "video/x-raw,width=640,height=480,framerate=30/1 ! "
+                "x264enc tune=zerolatency ! "
+                "rtph264pay name=pay0 pt=96 config-interval=1"
+            )
+            return Gst.parse_launch(fallback_pipeline)
+        
         pipeline_str = (
             f"rtspsrc location={self.url} latency=0 buffer-mode=auto "
             f"protocols=tcp timeout={self.timeout} retry=3 ! "
@@ -65,7 +79,7 @@ class RtspMediaFactory(GstRtspServer.RTSPMediaFactory):
             logger.error(f"Failed to create GStreamer pipeline: {e}")
             logger.error(f"Pipeline string: {pipeline_str}")
             
-            logger.info("Using test source as fallback")
+            logger.info("Using test source as fallback due to error")
             fallback_pipeline = (
                 "videotestsrc is-live=true ! "
                 "video/x-raw,width=640,height=480,framerate=30/1 ! "
@@ -105,7 +119,11 @@ class RtspServer:
     
     def _add_stream(self, stream_name, stream_info):
         try:
-            factory = RtspMediaFactory(stream_info['url'], self.config.get_disable_audio())
+            factory = RtspMediaFactory(
+                stream_info['url'], 
+                self.config.get_disable_audio(),
+                use_test_source=False  # Will be overridden in Docker environments
+            )
             
             factory.set_shared(True)  # Allow multiple clients to share one stream
             factory.set_eos_shutdown(True)  # Shutdown media when EOS is received
