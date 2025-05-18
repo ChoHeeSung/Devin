@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-rtsp \
     gstreamer1.0-libav \
+    gstreamer1.0-x264 \
     libgstrtspserver-1.0-dev \
     meson \
     ninja-build \

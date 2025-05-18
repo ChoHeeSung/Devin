@@ -97,10 +97,10 @@ You can test the streams using GStreamer:
 gst-launch-1.0 rtspsrc location=rtsp://localhost:8554/금곡IC protocols=tcp ! application/x-rtp,media=video ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink
 ```
 
-### For JPEG streams (when using test pattern fallback):
+### For H.264 test pattern streams (when source streams are not accessible):
 
 ```bash
-gst-launch-1.0 rtspsrc location=rtsp://localhost:8554/금곡IC protocols=tcp ! application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! jpegdec ! videoconvert ! autovideosink
+gst-launch-1.0 rtspsrc location=rtsp://localhost:8554/금곡IC protocols=tcp ! application/x-rtp,encoding-name=H264 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink
 ```
 
 ### Simple playbin (may not work in all environments):
@@ -108,6 +108,15 @@ gst-launch-1.0 rtspsrc location=rtsp://localhost:8554/금곡IC protocols=tcp ! a
 ```bash
 gst-launch-1.0 playbin uri=rtsp://localhost:8554/금곡IC
 ```
+
+### Using VLC Media Player:
+
+VLC can directly play the RTSP stream:
+1. Open VLC Media Player
+2. Select Media > Open Network Stream
+3. Enter the URL: `rtsp://localhost:8554/금곡IC`
+4. For best results, increase the network caching to 300-500ms in VLC preferences
+5. Click Play
 
 ## Troubleshooting
 
