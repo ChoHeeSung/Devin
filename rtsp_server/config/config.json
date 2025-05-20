@@ -1,0 +1,43 @@
+{
+    "server": {
+        "host": "0.0.0.0",
+        "port": 8554
+    },
+    "api": {
+        "base_url": "http://192.168.20.11",
+        "endpoint": "/matrix/select/cctvMas",
+        "timeout": 5,
+        "retry_count": 3,
+        "retry_delay": 1
+    },
+    "streams": {
+        "TEST1": {
+            "input_url": "rtsp://183.101.40.92/live/1.stream",
+            "output_path": "/TEST1",
+            "on_demand": true,
+            "max_clients": 10,
+            "idle_timeout": 300,
+            "buffer_size": "20M",
+            "rtsp_transport": "tcp"
+        }
+    },
+    "logging": {
+        "level": "DEBUG",
+        "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
+    },
+    "global_settings": {
+        "on_demand": {
+            "enabled": true,
+            "default_max_clients": 5,
+            "default_idle_timeout": 300,
+            "default_buffer_size": "10M"
+        },
+        "stream_settings": {
+            "default_codec": "copy",
+            "default_format": "rtsp",
+            "reconnect_attempts": 3,
+            "reconnect_delay": 5,
+            "default_rtsp_transport": "tcp"
+        }
+    }
+} 

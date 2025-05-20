@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  rtsp-server:
+    build: .
+    container_name: rtsp-server
+    ports:
+      - "8554:8554"
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - TZ=Asia/Seoul
+    restart: unless-stopped
+    networks:
+      - rtsp-network
+
+networks:
+  rtsp-network:
+    driver: bridge 
